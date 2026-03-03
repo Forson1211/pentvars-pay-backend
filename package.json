@@ -1,0 +1,41 @@
+{
+    "name": "pentvars-pay-backend",
+    "version": "1.0.0",
+    "description": "PentVars Pay Backend API - Node.js + Express + MongoDB",
+    "main": "dist/server.js",
+    "scripts": {
+        "dev": "ts-node-dev --respawn --transpile-only src/server.ts",
+        "build": "tsc",
+        "start": "node dist/server.js",
+        "seed": "ts-node src/seeds/seed.ts",
+        "seed:fees": "ts-node src/seeds/seedFeeSystem.ts",
+        "clear-seeds": "ts-node src/seeds/clear-seeds.ts"
+    },
+    "dependencies": {
+        "bcryptjs": "^2.4.3",
+        "cors": "^2.8.5",
+        "dotenv": "^16.4.7",
+        "express": "^4.21.2",
+        "express-rate-limit": "^7.5.0",
+        "express-validator": "^7.2.1",
+        "helmet": "^8.0.0",
+        "jsonwebtoken": "^9.0.2",
+        "mongoose": "^8.12.1",
+        "morgan": "^1.10.0",
+        "socket.io": "^4.8.3",
+        "uuid": "^11.1.0"
+    },
+    "devDependencies": {
+        "@types/bcryptjs": "^2.4.6",
+        "@types/cors": "^2.8.17",
+        "@types/express": "^5.0.0",
+        "@types/jsonwebtoken": "^9.0.9",
+        "@types/morgan": "^1.9.9",
+        "@types/node": "^22.13.4",
+        "@types/socket.io": "^3.0.1",
+        "@types/uuid": "^10.0.0",
+        "ts-node": "^10.9.2",
+        "ts-node-dev": "^2.0.0",
+        "typescript": "^5.7.3"
+    }
+}
