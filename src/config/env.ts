@@ -19,6 +19,7 @@ export const config = {
     ussd: {
         serviceCode: process.env.USSD_SERVICE_CODE || '*920*1#',
         provider: process.env.USSD_PROVIDER || 'africas_talking',
+        demoMode: process.env.USSD_DEMO_MODE === 'true',
     },
     reconciliation: {
         enabled: process.env.RECONCILIATION_ENABLED !== 'false',
