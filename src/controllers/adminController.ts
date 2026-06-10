@@ -1,6 +1,11 @@
 import { Request, Response, NextFunction } from 'express';
 import { User } from '../models/User';
 import { FeeItem } from '../models/FeeItem';
+import { StudentFee } from '../models/StudentFee';
+import { Payment } from '../models/Payment';
+import { Transaction } from '../models/Transaction';
+import { FeeCalculationService } from '../services/feeCalculationService';
+import { emitFeeUpdate } from '../services/socketService';
 import { generateToken, generateRefreshToken } from '../utils/helpers';
 
 /**
@@ -361,6 +366,112 @@ export const toggleHostelStatus = async (req: Request, res: Response, next: Next
                 studentId: student.studentId,
                 hostelOption: student.hostelOption,
             },
+        });
+    } catch (error) {
+        next(error);
+    }
+};
+
+/**
+ * POST /api/admin/reset-all-student-fees
+ * Admin: Hard-reset ALL student fee records to unpaid/pending.
+ *
+ * This operation:
+ *  1. Resets StudentFee.amountPaid → 0, balance → totalFee, status → 'unpaid'
+ *  2. Resets FeeItem.amountPaid → 0, balance → totalAmount, status → 'pending'
+ *  3. Deletes ALL Payment records (the source of truth for past payments)
+ *  4. Deletes ALL Transaction records (the Paystack log)
+ *  5. Auto-creates StudentFee records for every student who has none (fixes NO-FEES)
+ *  6. Broadcasts a fee:updated event so all connected students see the change instantly
+ */
+export const resetAllStudentFees = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+        // ── Step 1: Reset all StudentFee records ──────────────────────────────
+        const studentFees = await StudentFee.find({});
+        let sfReset = 0;
+        for (const sf of studentFees) {
+            sf.amountPaid = 0;
+            sf.balance = sf.totalFee;
+            sf.status = 'unpaid';
+            await sf.save();
+            sfReset++;
+        }
+
+        // ── Step 2: Reset all FeeItem records ────────────────────────────────
+        const feeItems = await FeeItem.find({});
+        let fiReset = 0;
+        for (const fi of feeItems) {
+            fi.amountPaid = 0;
+            fi.balance = fi.totalAmount;
+            fi.status = 'pending';
+            await fi.save();
+            fiReset++;
+        }
+
+        // ── Step 3: Delete ALL Payment + Transaction records ─────────────────
+        const [payDel, transDel] = await Promise.all([
+            Payment.deleteMany({}),
+            Transaction.deleteMany({}),
+        ]);
+
+        // ── Step 4: Auto-create StudentFee for students who have NONE ─────────
+        const activeYear = await FeeCalculationService.getActiveAcademicYear();
+        const allStudents = await User.find({ role: 'student' });
+        let autoCreated = 0;
+        const errors: string[] = [];
+
+        for (const student of allStudents) {
+            if (activeYear) {
+                try {
+                    let created = false;
+                    const sem1Fee = await StudentFee.findOne({ student: student._id, academicYear: activeYear._id, semester: 1 });
+                    if (!sem1Fee) {
+                        await FeeCalculationService.getOrCreateStudentFee(student as any, 1);
+                        created = true;
+                    }
+                    const sem2Fee = await StudentFee.findOne({ student: student._id, academicYear: activeYear._id, semester: 2 });
+                    if (!sem2Fee) {
+                        await FeeCalculationService.getOrCreateStudentFee(student as any, 2);
+                        created = true;
+                    }
+                    // Always run assignApplicableGlobalFees to ensure no missing global fee items
+                    const assignedCount = await FeeCalculationService.assignApplicableGlobalFees(student as any);
+                    if (created || assignedCount > 0) {
+                        autoCreated++;
+                    }
+                } catch (e: any) {
+                    errors.push(`${student.firstName} ${student.lastName}: ${e.message}`);
+                }
+            } else {
+                // Fallback if no active academic year
+                const existingFee = await StudentFee.findOne({ student: student._id });
+                if (!existingFee) {
+                    try {
+                        await FeeCalculationService.getOrCreateStudentFee(student as any, 1);
+                        await FeeCalculationService.assignApplicableGlobalFees(student as any);
+                        autoCreated++;
+                    } catch (e: any) {
+                        errors.push(`${student.firstName} ${student.lastName}: ${e.message}`);
+                    }
+                }
+            }
+        }
+
+        // ── Step 5: Broadcast real-time update to all connected students ──────
+        try {
+            emitFeeUpdate({ type: 'student_fee', action: 'updated' });
+        } catch (_) {/* silent */ }
+
+        res.json({
+            message: 'All student fee records have been reset to unpaid.',
+            summary: {
+                studentFeesReset: sfReset,
+                feeItemsReset: fiReset,
+                paymentsDeleted: payDel.deletedCount,
+                transactionsDeleted: transDel.deletedCount,
+                autoCreatedFees: autoCreated,
+            },
+            errors: errors.length > 0 ? errors : undefined,
         });
     } catch (error) {
         next(error);

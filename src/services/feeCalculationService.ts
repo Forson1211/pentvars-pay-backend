@@ -4,7 +4,7 @@ import { StudentFee, IStudentFee, IFeeBreakdown } from '../models/StudentFee';
 import { FeeType } from '../models/FeeType';
 import { FeeItem } from '../models/FeeItem';
 import { Programme } from '../models/Programme';
-import { IUser } from '../models/User';
+import { User, IUser } from '../models/User';
 import { Types } from 'mongoose';
 
 /**
@@ -45,9 +45,12 @@ export class FeeCalculationService {
      * Tries programmeRef first, then looks up by programme name string.
      */
     static async resolveProgrammeId(user: IUser): Promise<Types.ObjectId | null> {
-        // If user has a direct programmeRef ObjectId, use it
+        // If user has a direct programmeRef ObjectId, verify if it exists in DB
         if (user.programmeRef) {
-            return user.programmeRef as Types.ObjectId;
+            const exists = await Programme.findOne({ _id: user.programmeRef, isActive: true });
+            if (exists) {
+                return user.programmeRef as Types.ObjectId;
+            }
         }
 
         // Otherwise, try to find programme by name
@@ -57,6 +60,13 @@ export class FeeCalculationService {
                 isActive: true,
             });
             if (programme) {
+                // Self-heal: update the user document if programmeRef was wrong or missing
+                try {
+                    await User.updateOne({ _id: user._id }, { programmeRef: programme._id });
+                    user.programmeRef = programme._id;
+                } catch (err) {
+                    console.error('Failed to sync student programmeRef:', err);
+                }
                 return programme._id as Types.ObjectId;
             }
         }

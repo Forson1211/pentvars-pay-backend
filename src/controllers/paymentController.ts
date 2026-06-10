@@ -699,7 +699,12 @@ export const getTransactionHistory = async (req: Request, res: Response, next: N
 
 /**
  * DELETE /api/payments/history/clear
- * Hard delete transaction history
+ * Clears a student's transaction display history.
+ *
+ * IMPORTANT: We do NOT delete Payment records (they are the source of truth for
+ * StudentFee.amountPaid and FeeItem.amountPaid balances). Only Transaction log
+ * entries are removed. After deletion, we recalculate fee balances from the
+ * remaining Payment data so everything stays accurate.
  */
 export const clearTransactionHistory = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
@@ -708,21 +713,55 @@ export const clearTransactionHistory = async (req: Request, res: Response, next:
         const path = require('path');
         const logPath = path.join(process.cwd(), 'pay_errors.log');
 
-        // Delete from Transaction model — keep cancelled records (they are important for audit)
+        // ── Step 1: Delete Transaction log entries only (keep 'cancelled' for audit) ──
         const transResult = await Transaction.deleteMany({
             studentId,
-            status: { $in: ['completed', 'failed', 'pending'] }
+            status: { $in: ['completed', 'failed', 'pending', 'processing'] },
         });
 
-        // Delete from Payment reporting model as well
-        const payResult = await Payment.deleteMany({ student: studentId });
+        // ── Step 2: Do NOT delete Payment records — they drive fee balances ───────────
+        // Instead, recalculate StudentFee and FeeItem from remaining Payments.
 
-        fs.appendFileSync(logPath, `[${new Date().toISOString()}] CLEAR HISTORY: Student=${studentId}, DeletedTrans=${transResult.deletedCount}, DeletedPay=${payResult.deletedCount}\n`);
+        // Recalculate StudentFee balances
+        const studentFees = await StudentFee.find({ student: studentId });
+        for (const sf of studentFees) {
+            const paidAgg = await Payment.aggregate([
+                { $match: { studentFee: sf._id, student: sf.student, status: 'completed' } },
+                { $group: { _id: null, total: { $sum: '$amount' } } },
+            ]);
+            const paidTotal = paidAgg[0]?.total || 0;
+            sf.amountPaid = paidTotal;
+            sf.balance = Math.max(0, sf.totalFee - paidTotal);
+            if (sf.balance === 0) sf.status = 'paid';
+            else if (paidTotal > 0) sf.status = 'partial';
+            else sf.status = 'unpaid';
+            await sf.save();
+        }
+
+        // Recalculate FeeItem balances
+        const feeItems = await FeeItem.find({ studentId });
+        for (const fi of feeItems) {
+            const paidAgg = await Payment.aggregate([
+                { $match: { feeItem: fi._id, student: fi.studentId, status: 'completed' } },
+                { $group: { _id: null, total: { $sum: '$amount' } } },
+            ]);
+            const paidTotal = paidAgg[0]?.total || 0;
+            fi.amountPaid = paidTotal;
+            fi.balance = Math.max(0, fi.totalAmount - paidTotal);
+            if (fi.balance === 0) fi.status = 'paid';
+            else if (paidTotal > 0) fi.status = 'partial';
+            else fi.status = 'pending';
+            await fi.save();
+        }
+
+        fs.appendFileSync(
+            logPath,
+            `[${new Date().toISOString()}] CLEAR HISTORY: Student=${studentId}, DeletedTrans=${transResult.deletedCount}, FeesRecalculated=${studentFees.length + feeItems.length}\n`
+        );
 
         res.status(200).json({
-            message: 'History deleted permanently',
+            message: 'Transaction history cleared. Fee balances recalculated.',
             deletedTransactions: transResult.deletedCount,
-            deletedPayments: payResult.deletedCount
         });
     } catch (error) {
         next(error);

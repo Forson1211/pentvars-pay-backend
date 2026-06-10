@@ -40,7 +40,7 @@ import {
     getStudentCountByGroups,
     getPaymentList,
 } from '../controllers/reportController';
-import { getAdminHierarchy, createStaff, getAdvancedStats, impersonateUser, updateStaff, deleteStaff, toggleHostelStatus } from '../controllers/adminController';
+import { getAdminHierarchy, createStaff, getAdvancedStats, impersonateUser, updateStaff, deleteStaff, toggleHostelStatus, resetAllStudentFees } from '../controllers/adminController';
 import { previewPromotion, promoteStudents } from '../controllers/promotionController';
 import { authenticate, authorize } from '../middleware/auth';
 import { Request, Response, NextFunction } from 'express';
@@ -106,6 +106,9 @@ router.get('/stats/advanced', getAdvancedStats);
 
 // ──── Student Hostel Toggle ────
 router.put('/students/:id/hostel-status', toggleHostelStatus);
+
+// ──── Reset All Student Fees ────
+router.post('/reset-all-student-fees', resetAllStudentFees);
 
 // ──── Reconciliation ────
 router.post('/reconcile', async (req: Request, res: Response, next: NextFunction) => {
