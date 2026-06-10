@@ -1,6 +1,6 @@
 import mongoose, { Document, Schema, Types } from 'mongoose';
 
-export type PaymentStatus = 'pending' | 'processing' | 'completed' | 'failed' | 'refunded';
+export type PaymentStatus = 'pending' | 'processing' | 'completed' | 'failed' | 'refunded' | 'cancelled';
 export type PaymentMethod = 'mobile_money' | 'card' | 'bank_transfer' | 'ussd';
 export type FeeCategory = 'academic' | 'hostel' | 'resit' | 'supplementary' | 'exam' | 'other';
 export type PaymentChannel = 'paystack' | 'ussd' | 'manual';
@@ -68,7 +68,7 @@ const transactionSchema = new Schema<ITransaction>(
         },
         status: {
             type: String,
-            enum: ['pending', 'processing', 'completed', 'failed', 'refunded'],
+            enum: ['pending', 'processing', 'completed', 'failed', 'refunded', 'cancelled'],
             default: 'pending',
         },
         reference: {

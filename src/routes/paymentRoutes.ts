@@ -2,6 +2,7 @@ import { Router } from 'express';
 import {
     initiatePayment,
     verifyPayment,
+    cancelPayment,
     getTransactionHistory,
     getTransactionById,
     generateReceipt,
@@ -37,6 +38,7 @@ router.get('/debug/my-data', debugMyPayments);
 router.get('/receipt/:transactionId', generateReceipt);
 router.get('/student-insights', getStudentPaymentInsights);
 router.get('/verify/:reference', verifyPayment);
+router.patch('/:reference/cancel', cancelPayment);
 
 // Admin-only routes
 router.get('/stats', authorize('admin'), getPaymentStats);

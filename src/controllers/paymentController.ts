@@ -10,6 +10,7 @@ import { AuditLog } from '../models/AuditLog';
 import { generateReference } from '../utils/helpers';
 import { FeeCalculationService } from '../services/feeCalculationService';
 import { PaystackService } from '../services/paystackService';
+import { emitPaymentUpdate, emitPaymentCancelled } from '../services/socketService';
 import { config } from '../config/env';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -484,6 +485,17 @@ export const handleWebhook = async (req: Request, res: Response): Promise<void> 
                 data: { transactionId: transaction._id, studentId: transaction.studentId },
             }));
             await Notification.insertMany(adminNotifications);
+            
+            // ── 10. REAL-TIME SOCKET UPDATE ──
+            emitPaymentUpdate({
+                transactionId: transaction._id.toString(),
+                studentId: transaction.studentId.toString(),
+                studentName: `${student.firstName} ${student.lastName}`,
+                amount: amountGHSPaid,
+                description: transaction.description,
+                reference: transaction.reference,
+                category: transaction.category
+            });
         }
     } catch (notifyError) {
         console.error('[Webhook] Admin notification error:', notifyError);
@@ -537,13 +549,35 @@ export const verifyPayment = async (req: Request, res: Response, next: NextFunct
                     let feeItem: any = transaction.feeItemId ? await FeeItem.findById(transaction.feeItemId) : null;
                     let academicFee: any = transaction.studentFeeId ? await StudentFee.findById(transaction.studentFeeId) : null;
                     await updateLedger(feeItem, academicFee, amountGHSPaid, transaction.category);
+
+                    // ── REAL-TIME SOCKET UPDATE ──
+                    const student = await User.findById(transaction.studentId).select('firstName lastName');
+                    if (student) {
+                        emitPaymentUpdate({
+                            transactionId: transaction._id.toString(),
+                            studentId: transaction.studentId.toString(),
+                            studentName: `${student.firstName} ${student.lastName}`,
+                            amount: amountGHSPaid,
+                            description: transaction.description,
+                            reference: transaction.reference,
+                            category: transaction.category
+                        });
+                    }
                 }
-            } else if (psVerify.status && (psVerify.data?.status === 'failed' || psVerify.data?.status === 'abandoned')) {
-                // Explicitly mark as failed if Paystack says so
+            } else if (psVerify.status && psVerify.data?.status === 'failed') {
+                // Paystack explicitly reports failure — mark as failed
                 transaction.status = 'failed';
                 transaction.metadata = {
                     ...transaction.metadata,
-                    cancelReason: psVerify.data?.gateway_response || 'Abandoned by user'
+                    cancelReason: psVerify.data?.gateway_response || 'Payment failed'
+                };
+                await transaction.save();
+            } else if (psVerify.status && psVerify.data?.status === 'abandoned') {
+                // Student closed Paystack without paying — keep as pending (they can retry)
+                transaction.status = 'pending';
+                transaction.metadata = {
+                    ...transaction.metadata,
+                    abandonedAt: new Date().toISOString()
                 };
                 await transaction.save();
             }
@@ -553,6 +587,78 @@ export const verifyPayment = async (req: Request, res: Response, next: NextFunct
         }
 
         res.json({ ...transaction.toJSON(), verified: transaction.webhookVerified });
+    } catch (error) {
+        next(error);
+    }
+};
+
+// ─── CANCEL PAYMENT ──────────────────────────────────────────────────────────
+
+/**
+ * PATCH /api/payments/:reference/cancel
+ *
+ * Student explicitly cancels a pending/processing payment.
+ * Marks the transaction as 'cancelled' so it shows correctly in history.
+ */
+export const cancelPayment = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+        const { reference } = req.params;
+        const student = req.user!;
+
+        const transaction = await Transaction.findOne({ reference });
+        if (!transaction) {
+            res.status(404).json({ message: 'Transaction not found.' });
+            return;
+        }
+
+        // Only the owning student may cancel
+        if (transaction.studentId.toString() !== student.id.toString()) {
+            res.status(403).json({ message: 'Unauthorized.' });
+            return;
+        }
+
+        // Only pending/processing transactions can be cancelled
+        if (!['pending', 'processing'].includes(transaction.status)) {
+            res.status(400).json({ message: `Cannot cancel a transaction with status '${transaction.status}'.` });
+            return;
+        }
+
+        transaction.status = 'cancelled';
+        transaction.metadata = {
+            ...transaction.metadata,
+            cancelledAt: new Date().toISOString(),
+            cancelledBy: 'student',
+        };
+        await transaction.save();
+
+        await AuditLog.create({
+            action: 'payment_cancelled',
+            reference,
+            studentId: student.id,
+            amount: transaction.amount,
+            category: transaction.category,
+            isError: false,
+        }).catch(console.error);
+
+        // ── Real-time: Notify admins of cancellation ──────────────────────
+        try {
+            const studentUser = await User.findById(student.id).select('firstName lastName');
+            if (studentUser) {
+                emitPaymentCancelled({
+                    transactionId: transaction._id.toString(),
+                    studentId: transaction.studentId.toString(),
+                    studentName: `${studentUser.firstName} ${studentUser.lastName}`,
+                    amount: transaction.amount,
+                    description: transaction.description,
+                    reference: transaction.reference,
+                    category: transaction.category,
+                });
+            }
+        } catch (notifyErr) {
+            console.error('[CancelPayment] Socket emit failed:', notifyErr);
+        }
+
+        res.json({ message: 'Payment cancelled successfully.', status: 'cancelled' });
     } catch (error) {
         next(error);
     }
@@ -602,7 +708,7 @@ export const clearTransactionHistory = async (req: Request, res: Response, next:
         const path = require('path');
         const logPath = path.join(process.cwd(), 'pay_errors.log');
 
-        // Delete from Transaction model (including pending records which clutter history)
+        // Delete from Transaction model — keep cancelled records (they are important for audit)
         const transResult = await Transaction.deleteMany({
             studentId,
             status: { $in: ['completed', 'failed', 'pending'] }

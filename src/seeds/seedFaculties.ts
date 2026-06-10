@@ -85,15 +85,15 @@ async function seedFaculties() {
 
         console.log('\n🎓 Seeding Faculties & Programmes...\n');
 
-        // Wait: The prompt specified "Academic Year: 2024/2025". We should ensure 2024/2025 exists and is active.
-        let activeYear = await AcademicYear.findOne({ yearLabel: '2024/2025' });
+        // Wait: Ensure 2026/2027 exists and is active.
+        let activeYear = await AcademicYear.findOne({ yearLabel: '2026/2027' });
         if (!activeYear) {
             // Deactivate others
             await AcademicYear.updateMany({}, { isActive: false });
             activeYear = await AcademicYear.create({
-                yearLabel: '2024/2025',
-                startDate: new Date('2024-09-01'),
-                endDate: new Date('2025-07-31'),
+                yearLabel: '2026/2027',
+                startDate: new Date('2026-09-01'),
+                endDate: new Date('2027-07-31'),
                 isActive: true, // Make this the active one
             });
             console.log(`📅 Created academic year: ${activeYear.yearLabel}`);
@@ -156,7 +156,7 @@ async function seedFaculties() {
         await FeeTemplate.deleteMany({}); // Delete all existing templates to clear unknowns
         console.log('✅ All old fee templates removed.');
 
-        console.log('\n💸 Generating Fee Templates (2024/2025 All Student Types)...');
+        console.log('\n💸 Generating Fee Templates (2026/2027 All Student Types)...');
 
         const getTemplateParams = (facultyCode: string, level: string) => {
             let tuition = 0;

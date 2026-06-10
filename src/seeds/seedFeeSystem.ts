@@ -32,21 +32,21 @@ async function seedDynamicFeeSystem() {
 
         // ──── 1. Create Academic Years ────
         console.log('📅 Creating Academic Years...');
-        const [year2024, year2025] = await AcademicYear.create([
+        const [year2026, year2027] = await AcademicYear.create([
             {
-                yearLabel: '2024/2025',
+                yearLabel: '2026/2027',
                 isActive: true,
-                startDate: new Date('2024-09-01'),
-                endDate: new Date('2025-08-31'),
+                startDate: new Date('2026-09-01'),
+                endDate: new Date('2027-08-31'),
             },
             {
-                yearLabel: '2025/2026',
+                yearLabel: '2027/2028',
                 isActive: false,
-                startDate: new Date('2025-09-01'),
-                endDate: new Date('2026-08-31'),
+                startDate: new Date('2027-09-01'),
+                endDate: new Date('2028-08-31'),
             },
         ]);
-        console.log(`   ✅ Created: ${year2024.yearLabel} (Active), ${year2025.yearLabel}\n`);
+        console.log(`   ✅ Created: ${year2026.yearLabel} (Active), ${year2027.yearLabel}\n`);
 
         // ──── 2. Create Programmes ────
         console.log('🎓 Creating Programmes...');
@@ -287,7 +287,7 @@ async function seedDynamicFeeSystem() {
                     const tuition = Math.round(config.tuition * tuitionMultiplier);
 
                     templateData.push({
-                        academicYear: year2024._id,
+                        academicYear: year2026._id,
                         studentType: type,
                         programme: prog._id,
                         level,

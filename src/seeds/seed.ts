@@ -2,348 +2,202 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 import mongoose from 'mongoose';
-import bcrypt from 'bcryptjs';
 import { User } from '../models/User';
+import { Faculty } from '../models/Faculty';
+import { Programme } from '../models/Programme';
+import { AcademicYear } from '../models/AcademicYear';
+import { FeeTemplate } from '../models/FeeTemplate';
+import { StudentFee } from '../models/StudentFee';
+import { Payment } from '../models/Payment';
+import { Transaction } from '../models/Transaction';
 import { FeeType } from '../models/FeeType';
 import { FeeItem } from '../models/FeeItem';
-import { Transaction } from '../models/Transaction';
 import { config } from '../config/env';
 
 /**
- * Seed script to populate the database with initial data.
- * Matches the mock data that was in the frontend services.
- * 
- * Run with: npm run seed
+ * EXACT VISUAL REPLICA SEED
+ * Matches your screenshot headers, card names, and amounts perfectly.
  */
+
+const FACULTIES = [
+    { name: 'Engineering, Science & Computing (FESAC)', code: 'FESAC' },
+    { name: 'Built Environment & BEng Programmes', code: 'BENV' },
+    { name: 'Law', code: 'LAW' },
+    { name: 'Pentecost School of Theology & Missions', code: 'PSTM' },
+    { name: 'Business Administration', code: 'BA' },
+    { name: 'Health and Allied Science (FEHAS)', code: 'FEHAS' },
+    { name: 'Doctor of Herbal Medicine', code: 'DHM' },
+    { name: 'FEHAS – Engineering Programmes', code: 'FEHAS-ENG' },
+    { name: 'Nursing', code: 'NUR' },
+    { name: 'Physician Assistantship', code: 'PA' },
+    { name: 'Midwifery', code: 'MID' },
+    { name: 'Business Administration – Logistics & Supply Chain Management', code: 'BA-LOG' },
+];
+
+const PROGRAMMES_MAP: Record<string, string[]> = {
+    'FESAC': ['BSc. Information Technology', 'BSc. Computer Science', 'BSc. Computer Engineering', 'BSc. Mathematics'],
+    'BENV': ['BSc. Architecture', 'BSc. Quantity Surveying', 'BSc. Construction Technology'],
+};
+
+const getTemplateParams = (facultyCode: string, level: string) => {
+    const isL400 = level === '400';
+    let tuition = isL400 ? 3270.99 : 2553;
+    return {
+        tuitionPerSemester: tuition, academicUserFee: 0, srcFee: 0, practicalFee: 0, cipsFee: 0, latePenalty: 0, scholarshipDiscount: 0,
+    };
+};
+
 const seedDatabase = async () => {
     try {
         console.log('🌱 Connecting to MongoDB...');
         await mongoose.connect(config.mongoURI);
         console.log('✅ Connected to MongoDB');
 
-        // Clear existing data
-        console.log('🗑️  Clearing existing data...');
-        await User.deleteMany({});
-        await FeeType.deleteMany({});
-        await FeeItem.deleteMany({});
-        await Transaction.deleteMany({});
+        console.log('🧹 Clearing configuration and transaction data...');
+        await Promise.all([
+            Faculty.deleteMany({}),
+            Programme.deleteMany({}),
+            AcademicYear.deleteMany({}),
+            FeeTemplate.deleteMany({}),
+            StudentFee.deleteMany({}),
+            Payment.deleteMany({}),
+            Transaction.deleteMany({}),
+            FeeType.deleteMany({}),
+            FeeItem.deleteMany({}),
+        ]);
 
-        // ─── Create Admin User ──────────────────────────
-        console.log('👤 Creating admin user...');
-        const admin = await User.create({
-            email: 'admin@pentvarsuniversity.edu.gh',
-            password: 'admin123',
-            firstName: 'Admin',
-            lastName: 'User',
-            role: 'admin',
-            phone: '0240000000',
-            department: 'Finance',
-        });
-        console.log(`   ✅ Admin: ${admin.email} / admin123`);
-
-        // ─── Create Student User ────────────────────────
-        console.log('👤 Creating student user...');
-        const student = await User.create({
-            email: 'student@pentvarsuniversity.edu.gh',
-            password: 'student123',
-            firstName: 'Student',
-            lastName: 'User',
-            role: 'student',
-            studentId: '20230001',
-            phone: '0241111111',
-            programme: 'BSc. Information Technology',
-            level: '300',
-            campus: 'Main Campus',
-        });
-        console.log(`   ✅ Student: ${student.email} / student123`);
-
-        // ─── Create Additional Students ─────────────────
-        console.log('👥 Creating additional students...');
-        const student2 = await User.create({
-            email: 'john.mensah@pentvarsuniversity.edu.gh',
-            password: 'password123',
-            firstName: 'John',
-            lastName: 'Mensah',
-            role: 'student',
-            studentId: '20230002',
-            phone: '0242222222',
-            programme: 'BSc. Computer Science',
-            level: '200',
+        const academicYear = await AcademicYear.create({
+            yearLabel: '2026/2027', startDate: new Date('2026-09-01'), endDate: new Date('2027-07-31'), isActive: true,
         });
 
-        const student3 = await User.create({
-            email: 'ama.serwaa@pentvarsuniversity.edu.gh',
-            password: 'password123',
-            firstName: 'Ama',
-            lastName: 'Serwaa',
-            role: 'student',
-            studentId: '20230003',
-            phone: '0243333333',
-            programme: 'BSc. Business Administration',
-            level: '400',
-        });
+        for (const facData of FACULTIES) {
+            await Faculty.findOneAndUpdate({ code: facData.code }, facData, { upsert: true, new: true });
+        }
+        const faculties = await Faculty.find();
+        const facCodeMap: Record<string, any> = {};
+        faculties.forEach(f => { facCodeMap[f.code!] = f; });
 
-        const student4 = await User.create({
-            email: 'kwame.asante@pentvarsuniversity.edu.gh',
-            password: 'password123',
-            firstName: 'Kwame',
-            lastName: 'Asante',
-            role: 'student',
-            studentId: '20230004',
-            phone: '0244444444',
-            programme: 'BSc. Nursing',
-            level: '100',
-        });
+        const progMap: Record<string, any> = {};
+        for (const [code, names] of Object.entries(PROGRAMMES_MAP)) {
+            const fac = facCodeMap[code];
+            if (!fac) continue;
+            for (const name of names) {
+                const prog = await Programme.findOneAndUpdate(
+                    { faculty: fac._id, programmeName: name },
+                    { faculty: fac._id, programmeName: name },
+                    { upsert: true, new: true }
+                );
+                progMap[name] = prog;
+            }
+        }
 
-        console.log(`   ✅ Created 3 additional students`);
-
-        // ─── Create Fee Types ───────────────────────────
-        console.log('💰 Creating fee types...');
-        const tuitionFee = await FeeType.create({
-            name: 'Tuition Fee',
-            category: 'tuition',
-            amount: 8000.00,
-            description: 'Tuition fee for the semester',
-            academicYear: '2025/2026',
-            semester: '1',
-            dueDate: new Date('2026-06-30'),
-            isActive: true,
-        });
-
-        const srcDues = await FeeType.create({
-            name: 'SRC Dues',
-            category: 'src_dues',
-            amount: 1000.00,
-            description: 'SRC Dues for the semester',
-            academicYear: '2025/2026',
-            semester: '1',
-            dueDate: new Date('2026-06-30'),
-            isActive: true,
-        });
-
-        const hostelFee = await FeeType.create({
-            name: 'Hostel Fee',
-            category: 'hostel',
-            amount: 1000.00,
-            description: 'Hostel Fee for the semester',
-            academicYear: '2025/2026',
-            semester: '1',
-            dueDate: new Date('2026-06-30'),
-            isActive: true,
-        });
-
-        const accommodationMaintenance = await FeeType.create({
-            name: 'Accommodation Maintenance',
-            category: 'hostel',
-            amount: 2500.00,
-            description: 'Maintenance fee for accommodation',
-            academicYear: '2025/2026',
-            semester: '1',
-            dueDate: new Date('2026-06-30'),
-            isActive: true,
-        });
-
-        const resitFee = await FeeType.create({
-            name: 'Resit Exam Fee',
-            category: 'resit',
-            amount: 200.00,
-            description: 'Fee for resit examination',
-            academicYear: '2025/2026',
-            semester: '1',
-            dueDate: new Date('2026-06-30'),
-            isActive: true,
-        });
-
-        const supplementaryFee = await FeeType.create({
-            name: 'Supplementary Exam Fee',
-            category: 'supplementary',
-            amount: 300.00,
-            description: 'Fee for supplementary examination',
-            academicYear: '2025/2026',
-            semester: '1',
-            dueDate: new Date('2026-06-30'),
-            isActive: true,
-        });
-
-        console.log('   ✅ Created 6 fee types');
-
-        // ─── Assign Fees to Main Student ────────────────
-        console.log('📋 Assigning fees to students...');
-
-        const feeItem1 = await FeeItem.create({
-            feeTypeId: tuitionFee._id,
-            studentId: student._id,
-            totalAmount: 8000.00,
-            amountPaid: 5000.00,
-            balance: 3000.00,
-            status: 'partial',
-            dueDate: new Date('2026-03-30'),
-            academicYear: '2025/2026',
-            semester: '1',
-        });
-
-        const feeItem2 = await FeeItem.create({
-            feeTypeId: srcDues._id,
-            studentId: student._id,
-            totalAmount: 1000.00,
-            amountPaid: 750.00,
-            balance: 250.00,
-            status: 'partial',
-            dueDate: new Date('2026-02-15'),
-            academicYear: '2025/2026',
-            semester: '1',
-        });
-
-        await FeeItem.create({
-            feeTypeId: hostelFee._id,
-            studentId: student._id,
-            totalAmount: 1000.00,
-            amountPaid: 500.00,
-            balance: 500.00,
-            status: 'partial',
-            dueDate: new Date('2026-04-10'),
-            academicYear: '2025/2026',
-            semester: '1',
-        });
-
-        await FeeItem.create({
-            feeTypeId: accommodationMaintenance._id,
-            studentId: student._id,
-            totalAmount: 2500.00,
-            amountPaid: 2500.00,
-            balance: 0.00,
-            status: 'paid',
-            dueDate: new Date('2026-01-10'),
-            academicYear: '2025/2026',
-            semester: '1',
-        });
-
-        await FeeItem.create({
-            feeTypeId: resitFee._id,
-            studentId: student._id,
-            totalAmount: 200.00,
-            amountPaid: 0.00,
-            balance: 200.00,
-            status: 'pending',
-            dueDate: new Date('2026-05-15'),
-            academicYear: '2025/2026',
-            semester: '1',
-        });
-
-        await FeeItem.create({
-            feeTypeId: supplementaryFee._id,
-            studentId: student._id,
-            totalAmount: 300.00,
-            amountPaid: 0.00,
-            balance: 300.00,
-            status: 'pending',
-            dueDate: new Date('2026-05-20'),
-            academicYear: '2025/2026',
-            semester: '1',
-        });
-
-        // Assign tuition to other students too
-        for (const s of [student2, student3, student4]) {
-            await FeeItem.create({
-                feeTypeId: tuitionFee._id,
-                studentId: s._id,
-                totalAmount: 8000.00,
-                amountPaid: 0,
-                balance: 8000.00,
-                status: 'pending',
-                dueDate: new Date('2026-06-30'),
-                academicYear: '2025/2026',
-                semester: '1',
+        let admin = await User.findOne({ email: 'admin@pentvarsuniversity.edu.gh' });
+        if (!admin) {
+            admin = await User.create({
+                email: 'admin@pentvarsuniversity.edu.gh', password: 'admin123',
+                firstName: 'Admin', lastName: 'User', role: 'admin', status: 'active'
             });
         }
 
-        console.log('   ✅ Assigned fees to 4 students');
+        let forson = await User.findOne({ email: 'puit22217120@pentvars.edu.gh' });
+        const forsonProg = progMap['BSc. Information Technology'];
+        if (!forson) {
+            forson = await User.create({
+                email: 'puit22217120@pentvars.edu.gh', password: '370563Forson',
+                firstName: 'Forson', lastName: 'Odonkor', role: 'student', studentId: 'PUIT/22217120',
+                programme: 'BSc. Information Technology', level: '400', currentLevel: 400,
+                graduationLevel: 400, entryLevel: 100, status: 'active',
+                stream: 'regular', nationality: 'ghanaian',
+                programmeRef: forsonProg?._id,
+            });
+        } else {
+            forson.password = '370563Forson';
+            forson.currentLevel = 400;
+            forson.graduationLevel = 400;
+            forson.programmeRef = forsonProg?._id || forson.programmeRef;
+            await forson.save();
+        }
 
-        // ─── Create Sample Transactions ─────────────────
-        console.log('📝 Creating sample transactions...');
+        console.log('💸 Generating All Original Fee Templates...');
+        const levels = ['100', '200', '300', '400'];
+        for (const fac of faculties) {
+            const progs = await Programme.find({ faculty: fac._id });
+            for (const prog of progs) {
+                for (const level of levels) {
+                    const params = getTemplateParams(fac.code!, level);
+                    await FeeTemplate.create({
+                        academicYear: academicYear._id, studentType: 'regular',
+                        faculty: fac._id, programme: prog._id, level, ...params,
+                        isActive: true, createdBy: admin._id
+                    });
+                }
+            }
+        }
 
-        await Transaction.create({
-            studentId: student._id,
-            feeItemId: feeItem1._id,
-            amount: 2500.00,
-            paymentMethod: 'mobile_money',
-            status: 'completed',
-            reference: 'PAY-REF123456',
-            description: 'Tuition Fee Payment',
-            paidAt: new Date('2026-02-10T10:30:00Z'),
+        console.log('📄 Creating specific general fee types...');
+        const hostelType = await FeeType.create({
+            name: 'Hostel Fee 2026/2027', category: 'hostel', amount: 2000.00,
+            academicYear: '2026/2027', semester: '1', dueDate: new Date('2027-05-30'), isActive: true
         });
 
-        await Transaction.create({
-            studentId: student._id,
-            feeItemId: feeItem1._id,
-            amount: 2500.00,
-            paymentMethod: 'mobile_money',
-            status: 'completed',
-            reference: 'PAY-REF123457',
-            description: 'Tuition Fee Payment',
-            paidAt: new Date('2026-02-08T14:20:00Z'),
+        const supplementaryType = await FeeType.create({
+            name: 'Supplementary Exam Fee', category: 'supplementary', amount: 299.99,
+            academicYear: '2026/2027', semester: '1', dueDate: new Date('2027-05-30'), isActive: true
         });
 
-        await Transaction.create({
-            studentId: student2._id,
-            feeItemId: feeItem1._id,
-            amount: 3000.00,
-            paymentMethod: 'bank_transfer',
-            status: 'completed',
-            reference: 'PAY-REF223456',
-            description: 'Tuition Fee Payment',
-            paidAt: new Date('2026-02-12T08:00:00Z'),
+        const resitType = await FeeType.create({
+            name: 'Resit Exam Fee 2026/2027', category: 'resit', amount: 150.00,
+            academicYear: '2026/2027', semester: '1', dueDate: new Date('2027-05-30'), isActive: true
         });
 
-        await Transaction.create({
-            studentId: student3._id,
-            feeItemId: feeItem2._id,
-            amount: 2500.00,
-            paymentMethod: 'card',
-            status: 'completed',
-            reference: 'PAY-REF323456',
-            description: 'SRC Dues Payment',
-            paidAt: new Date('2026-02-12T04:00:00Z'),
+        console.log('🔗 Replicating exact fees for Forson Odonkor...');
+        const forsonTemplate = await FeeTemplate.findOne({ 
+            faculty: facCodeMap['FESAC']?._id, programme: progMap['BSc. Information Technology']?._id,
+            level: '400', studentType: 'regular'
         });
 
-        await Transaction.create({
-            studentId: student4._id,
-            feeItemId: feeItem1._id,
-            amount: 1000.00,
-            paymentMethod: 'mobile_money',
-            status: 'pending',
-            reference: 'PAY-REF423456',
-            description: 'Tuition Fee Payment',
-        });
+        if (forsonTemplate) {
+            await StudentFee.create({
+                student: forson._id, academicYear: academicYear._id, feeTemplate: forsonTemplate._id, semester: 1,
+                totalFee: 3271.00, amountPaid: 0.01, balance: 3270.99, status: 'partial', dueDate: new Date('2027-05-30'),
+                breakdown: { tuition: 3000.00, srcFee: 25.00, academicUserFee: 246.00, practicalFee: 0, cipsFee: 0, latePenalty: 0, scholarshipDiscount: 0 }
+            });
+        }
 
-        console.log('   ✅ Created 5 sample transactions');
+        // ASSIGN ALL THREE GENERAL FEES (HOSTEL, SUPPLEMENTARY, RESIT)
+        const generalTypes = [hostelType, supplementaryType, resitType];
+        for (const type of generalTypes) {
+            await FeeItem.create({
+                feeTypeId: type._id, studentId: forson._id, totalAmount: type.amount,
+                amountPaid: 0, balance: type.amount, status: 'pending',
+                dueDate: type.dueDate, academicYear: type.academicYear, semester: type.semester,
+            });
+        }
 
-        // ─── Summary ────────────────────────────────────
-        console.log('');
-        console.log('╔══════════════════════════════════════════════════════╗');
-        console.log('║           🎓 Database Seeded Successfully!          ║');
-        console.log('╠══════════════════════════════════════════════════════╣');
-        console.log('║                                                      ║');
-        console.log('║  📧 Admin Login:                                     ║');
-        console.log('║     Email:    admin@pentvarsuniversity.edu.gh        ║');
-        console.log('║     Password: admin123                               ║');
-        console.log('║                                                      ║');
-        console.log('║  📧 Student Login:                                   ║');
-        console.log('║     Email:    student@pentvarsuniversity.edu.gh      ║');
-        console.log('║     Password: student123                             ║');
-        console.log('║                                                      ║');
-        console.log('║  📊 Data Created:                                    ║');
-        console.log('║     • 1 Admin + 4 Students                          ║');
-        console.log('║     • 6 Fee Types                                    ║');
-        console.log('║     • 9 Fee Assignments                              ║');
-        console.log('║     • 5 Transactions                                 ║');
-        console.log('║                                                      ║');
-        console.log('╚══════════════════════════════════════════════════════╝');
-        console.log('');
+        // SEED PAYMENT HISTORY for analytics chart (last 12 months)
+        console.log('📊 Adding payment history for analytics...');
+        const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+        const paymentAmounts = [1200, 980, 1540, 2100, 875, 1650, 2300, 1900, 1100, 2450, 1800, 1350];
+        const today = new Date();
+        for (let i = 11; i >= 0; i--) {
+            const d = new Date(today.getFullYear(), today.getMonth() - i, 15);
+            const amount = paymentAmounts[i % paymentAmounts.length];
+            await Payment.create({
+                student: forson._id,
+                amount,
+                paymentMethod: 'mobile_money',
+                status: 'completed',
+                transactionReference: `HIST-${i}-${Date.now()}`,
+                paymentDate: d,
+                description: `Academic fee payment - ${months[d.getMonth()]} ${d.getFullYear()}`,
+            });
+        }
+        console.log('✅ Payment history added (12 months of data).');
 
+        console.log('\n✅ DATABASE EXACTLY REPLICATED TO MATCH SCREENSHOT!');
         process.exit(0);
     } catch (error) {
-        console.error('❌ Seed Error:', error);
+        console.error('❌ Sync Error:', error);
         process.exit(1);
     }
 };

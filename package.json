@@ -9,6 +9,9 @@
         "start": "node dist/server.js",
         "seed": "ts-node src/seeds/seed.ts",
         "seed:fees": "ts-node src/seeds/seedFeeSystem.ts",
+        "seed:faculties": "ts-node src/seeds/seedFaculties.ts",
+        "repair:templates": "ts-node src/seeds/repair-fee-templates.ts",
+        "repair:all": "ts-node src/seeds/repair-programmes-and-templates.ts",
         "clear-seeds": "ts-node src/seeds/clear-seeds.ts"
     },
     "dependencies": {

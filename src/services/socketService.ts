@@ -20,17 +20,24 @@ export const initSocket = (httpServer: HttpServer): SocketIOServer => {
         },
         // Allow long-polling as fallback for Expo Web / React Native
         transports: ['websocket', 'polling'],
+        maxHttpBufferSize: 1e7, // 10MB to match express limit
     });
 
     io.on('connection', (socket: Socket) => {
         console.log(`🔌 [Socket.IO] Client connected:  ${socket.id}`);
 
-        // Students join a personal room keyed by their user ID
-        socket.on('join', (userId: string) => {
+        // Clients join rooms based on their role/ID
+        socket.on('join', ({ userId, role }: { userId: string; role?: string }) => {
             if (userId) {
-                socket.join(`student:${userId}`);
-                socket.join('students'); // global room for broadcast
-                console.log(`   ↳ User ${userId} joined rooms [student:${userId}, students]`);
+                socket.join(`user:${userId}`);
+                if (role === 'admin') {
+                    socket.join('admins');
+                    console.log(`   ↳ Admin ${userId} joined room [admins]`);
+                } else {
+                    socket.join('students');
+                    socket.join(`student:${userId}`);
+                    console.log(`   ↳ Student ${userId} joined rooms [student:${userId}, students]`);
+                }
             }
         });
 
@@ -91,4 +98,40 @@ export const emitFeeUpdate = (payload: FeeUpdatePayload): void => {
 
     console.log(`📡 [Socket.IO] Emitted fee:updated →`, payload.type, payload.action,
         payload.studentId ? `→ student:${payload.studentId}` : '→ all students');
+};
+
+/**
+ * Broadcast a payment-success event to all connected admins.
+ * This ensures "instant reflection" on the admin dashboard.
+ */
+export const emitPaymentUpdate = (data: {
+    transactionId: string;
+    studentId: string;
+    studentName: string;
+    amount: number;
+    description: string;
+    reference: string;
+    category: string;
+}): void => {
+    if (!io) return;
+    io.to('admins').emit('payment:completed', data);
+    console.log(`📡 [Socket.IO] Emitted payment:completed → admins [Ref: ${data.reference}]`);
+};
+
+/**
+ * Broadcast a payment-cancelled event to all connected admins.
+ * This ensures cancelled transactions appear in real-time on the admin side.
+ */
+export const emitPaymentCancelled = (data: {
+    transactionId: string;
+    studentId: string;
+    studentName: string;
+    amount: number;
+    description: string;
+    reference: string;
+    category: string;
+}): void => {
+    if (!io) return;
+    io.to('admins').emit('payment:cancelled', data);
+    console.log(`📡 [Socket.IO] Emitted payment:cancelled → admins [Ref: ${data.reference}]`);
 };
