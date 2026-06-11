@@ -601,24 +601,42 @@ export const getAllStudentsWithBalance = async (req: Request, res: Response, nex
         // Get active year for balance from current year
         const activeYear = await AcademicYear.findOne({ isActive: true });
 
-        // Get balances for all students
+        // Get the CURRENT semester balance per student.
+        // Rule: show semester 1 until it's paid, then show semester 2.
+        // We pick the lowest-semester record that is not yet fully paid.
+        // If both are paid, we show the most recent semester.
         const studentIds = students.map(s => s._id);
         const feeMatch: any = { student: { $in: studentIds } };
         if (activeYear) feeMatch.academicYear = activeYear._id;
 
-        const balanceAgg = await StudentFee.aggregate([
-            { $match: feeMatch },
-            {
-                $group: {
-                    _id: '$student',
-                    totalFees: { $sum: '$totalFee' },
-                    totalPaid: { $sum: '$amountPaid' },
-                    totalBalance: { $sum: '$balance' },
-                },
-            },
-        ]);
+        const allFees = await StudentFee.find(feeMatch)
+            .select('student semester totalFee amountPaid balance status')
+            .lean();
 
-        const balanceMap = new Map(balanceAgg.map(b => [b._id.toString(), b]));
+        // Group by student
+        const feesByStudent = new Map<string, typeof allFees>();
+        for (const fee of allFees) {
+            const key = fee.student.toString();
+            if (!feesByStudent.has(key)) feesByStudent.set(key, []);
+            feesByStudent.get(key)!.push(fee);
+        }
+
+        // Pick the "current" semester fee per student
+        const balanceMap = new Map<string, { totalFees: number; totalPaid: number; totalBalance: number; semester: number }>();
+        for (const [studentId, fees] of feesByStudent) {
+            // Sort by semester ascending
+            fees.sort((a, b) => (a.semester as number) - (b.semester as number));
+            // Pick first unpaid/partial fee; fallback to last fee if all paid
+            const current = fees.find(f => f.status !== 'paid') || fees[fees.length - 1];
+            if (current) {
+                balanceMap.set(studentId, {
+                    totalFees: current.totalFee,
+                    totalPaid: current.amountPaid,
+                    totalBalance: current.balance,
+                    semester: current.semester as number,
+                });
+            }
+        }
 
         const results = students.map(s => {
             const bal = balanceMap.get(s._id.toString());
@@ -637,6 +655,7 @@ export const getAllStudentsWithBalance = async (req: Request, res: Response, nex
                 totalFees: bal?.totalFees || 0,
                 totalPaid: bal?.totalPaid || 0,
                 balance: bal?.totalBalance || 0,
+                semester: bal?.semester || 1,
                 paymentStatus: bal
                     ? (bal.totalBalance === 0 ? 'paid' : (bal.totalPaid > 0 ? 'partial' : 'unpaid'))
                     : 'no-fees',
