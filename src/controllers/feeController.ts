@@ -425,6 +425,12 @@ export const bulkAssignFees = async (req: Request, res: Response, next: NextFunc
         );
 
         const created = feeItems.filter(Boolean);
+        
+        // 🔴 Notify all students in real-time
+        try {
+            emitFeeUpdate({ type: 'student_fee', action: 'created' });
+        } catch (_) { /* silent */ }
+
         res.status(201).json(created);
     } catch (error) {
         next(error);

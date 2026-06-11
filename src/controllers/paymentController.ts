@@ -910,7 +910,7 @@ export const getStudentPaymentInsights = async (req: Request, res: Response, nex
         }).populate('feeTypeId');
 
         const feeItemDeadlines = feeItems
-            .filter(f => f.dueDate && new Date(f.dueDate) >= now)
+            .filter(f => f.dueDate)
             .map(f => {
                 const feeType = f.feeTypeId as any;
                 const dueDate = new Date(f.dueDate);
@@ -923,7 +923,7 @@ export const getStudentPaymentInsights = async (req: Request, res: Response, nex
         }).populate('academicYear');
 
         const studentFeeDeadlines = studentFees
-            .filter(sf => sf.dueDate && new Date(sf.dueDate) >= now)
+            .filter(sf => sf.dueDate)
             .map(sf => {
                 const yearLabel = (sf.academicYear as any)?.yearLabel || '';
                 const dueDate = new Date(sf.dueDate!);

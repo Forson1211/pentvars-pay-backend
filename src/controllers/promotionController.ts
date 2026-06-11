@@ -3,6 +3,7 @@ import { User } from '../models/User';
 import { FeeCalculationService } from '../services/feeCalculationService';
 import { Programme } from '../models/Programme';
 import { Types } from 'mongoose';
+import { emitFeeUpdate } from '../services/socketService';
 
 /**
  * GET /api/admin/promotion-preview
@@ -169,6 +170,11 @@ export const promoteStudents = async (req: Request, res: Response, next: NextFun
 
             promotedCount++;
         }
+
+        // 🔴 Broadcast fee/promotion changes in real-time
+        try {
+            emitFeeUpdate({ type: 'student_fee', action: 'updated' });
+        } catch (_) { /* silent */ }
 
         res.status(200).json({
             message: 'Promotion process completed successfully.',

@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from 'express';
 import { Announcement } from '../models/Announcement';
 import { User } from '../models/User';
 import { Notification } from '../models/Notification';
+import { emitFeeUpdate } from '../services/socketService';
 
 /**
  * GET /api/announcements
@@ -62,6 +63,11 @@ export const createAnnouncement = async (req: Request, res: Response, next: Next
             // Using insertMany for better performance with large student counts
             await Notification.insertMany(notifications);
         }
+
+        // 🔴 Notify all students/users in real-time
+        try {
+            emitFeeUpdate({ type: 'announcement', action: 'created' });
+        } catch (_) { /* silent */ }
 
         res.status(201).json(announcement);
     } catch (error) {

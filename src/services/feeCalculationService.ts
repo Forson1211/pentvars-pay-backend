@@ -79,8 +79,8 @@ export class FeeCalculationService {
      * 
      * Semester Total =
      *   tuitionPerSemester
-     * + (academicUserFee / 2)
-     * + (srcFee / 2)
+     * + academicUserFee
+     * + srcFee
      * + practicalFee
      * + cipsFee
      * + hostelFee
@@ -92,8 +92,8 @@ export class FeeCalculationService {
         isLatePayment: boolean = false
     ): { breakdown: IFeeBreakdown; totalFee: number } {
         const tuition = template.tuitionPerSemester;
-        const academicUserFee = Math.round((template.academicUserFee / 2) * 100) / 100;
-        const srcFee = Math.round((template.srcFee / 2) * 100) / 100;
+        const academicUserFee = Math.round((template.academicUserFee || 0) * 100) / 100;
+        const srcFee = Math.round((template.srcFee || 0) * 100) / 100;
         const practicalFee = template.practicalFee || 0;
         const cipsFee = template.cipsFee || 0;
         const latePenalty = isLatePayment ? (template.latePenalty || 0) : 0;
@@ -229,6 +229,7 @@ export class FeeCalculationService {
         studentFee.breakdown = breakdown;
         studentFee.totalFee = totalFee;
         studentFee.balance = Math.max(0, totalFee - studentFee.amountPaid);
+        studentFee.dueDate = template.dueDate || undefined;
 
         // Update status
         if (studentFee.balance === 0) {
@@ -352,8 +353,8 @@ export class FeeCalculationService {
                 let isEligible = false;
 
                 if (isHostel) {
-                    // Hostel: Optional for ALL students
-                    isEligible = true;
+                    // Hostel: Assigned only if the student has selected the hostel option
+                    isEligible = user.hostelOption === true;
                 } else if (isExam) {
                     // Exams: Everyone
                     isEligible = true;

@@ -93,7 +93,7 @@ app.get('/api/health', (_req, res) => {
     res.json({
         status: 'ok',
         service: 'PentVars Pay API',
-        version: '2.0.0',
+        version: '2.0.1-exact-fees-fix',
         timestamp: new Date().toISOString(),
         paystack: config.paystack.secretKey && config.paystack.secretKey !== 'sk_test_your_paystack_secret_key' ? 'configured' : 'not_configured',
     });

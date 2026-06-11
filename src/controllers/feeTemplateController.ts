@@ -171,11 +171,11 @@ export const updateFeeTemplate = async (req: Request, res: Response, next: NextF
         let recalculated = 0;
 
         for (const fee of affectedFees) {
-            await FeeCalculationService.recalculateStudentFee(fee._id as any, template);
+            const updatedFee = await FeeCalculationService.recalculateStudentFee(fee._id as any, template);
             // If dueDate was updated on the template, propagate to StudentFee
-            if (updates.dueDate !== undefined) {
-                fee.dueDate = updates.dueDate ? new Date(updates.dueDate) : undefined;
-                await fee.save();
+            if (updatedFee && updates.dueDate !== undefined) {
+                updatedFee.dueDate = updates.dueDate ? new Date(updates.dueDate) : undefined;
+                await updatedFee.save();
             }
             recalculated++;
         }

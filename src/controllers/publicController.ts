@@ -98,13 +98,13 @@ export const getFeePreview = async (req: Request, res: Response, next: NextFunct
 
         // Calculate — ALL server-side
         const tuition = template.tuitionPerSemester;
-        const academicUserFee = Math.round((template.academicUserFee / 2) * 100) / 100;
-        const srcFee = Math.round((template.srcFee / 2) * 100) / 100;
+        const academicUserFee = Math.round((template.academicUserFee || 0) * 100) / 100;
+        const srcFee = Math.round((template.srcFee || 0) * 100) / 100;
         const practicalFee = template.practicalFee || 0;
         const cipsFee = template.cipsFee || 0;
 
         const semesterTotal = Math.round((tuition + academicUserFee + srcFee + practicalFee + cipsFee) * 100) / 100;
-        const annualTotal = Math.round((template.tuitionPerSemester * 2 + template.academicUserFee + template.srcFee + (practicalFee * 2) + (cipsFee * 2)) * 100) / 100;
+        const annualTotal = Math.round((template.tuitionPerSemester * 2 + (template.academicUserFee || 0) * 2 + (template.srcFee || 0) * 2 + (practicalFee * 2) + (cipsFee * 2)) * 100) / 100;
 
         res.json({
             academicYear: activeYear.toJSON(),

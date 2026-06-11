@@ -16,12 +16,6 @@ import { Notification } from '../models/Notification';
 export const getStudentDashboard = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
         const user = req.user!;
-        const semester = parseInt(req.query.semester as string) || 1;
-
-        if (semester !== 1 && semester !== 2) {
-            res.status(400).json({ message: 'Semester must be 1 or 2.' });
-            return;
-        }
 
         // Get active academic year
         const activeYear = await AcademicYear.findOne({ isActive: true });
@@ -30,10 +24,34 @@ export const getStudentDashboard = async (req: Request, res: Response, next: Nex
             return;
         }
 
+        // Enforce active semester: Semester 1 shows first. When Semester 1 is paid, Semester 2 shows.
+        let studentFeeSem1: any = await StudentFee.findOne({
+            student: user._id,
+            academicYear: activeYear._id,
+            semester: 1,
+        });
+
+        if (!studentFeeSem1) {
+            // Generate Semester 1 fee record if it doesn't exist yet
+            studentFeeSem1 = await FeeCalculationService.getOrCreateStudentFee(user, 1);
+        }
+
+        let semester: 1 | 2 = 1;
+        if (studentFeeSem1 && studentFeeSem1.status === 'paid') {
+            semester = (parseInt(req.query.semester as string) as 1 | 2) || 2;
+        } else {
+            semester = 1;
+        }
+
+        if (semester !== 1 && semester !== 2) {
+            res.status(400).json({ message: 'Semester must be 1 or 2.' });
+            return;
+        }
+
         // Get or create student fee (server-side calculation)
         let studentFee;
         try {
-            studentFee = await FeeCalculationService.getOrCreateStudentFee(user, semester as 1 | 2);
+            studentFee = await FeeCalculationService.getOrCreateStudentFee(user, semester);
         } catch (calcError: any) {
             res.status(404).json({
                 message: calcError.message || 'Unable to calculate fees. Contact administration.',

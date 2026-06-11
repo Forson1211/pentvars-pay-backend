@@ -6,6 +6,7 @@ import { Payment } from '../models/Payment';
 import { Transaction } from '../models/Transaction';
 import { FeeCalculationService } from '../services/feeCalculationService';
 import { emitFeeUpdate } from '../services/socketService';
+import { FeeType } from '../models/FeeType';
 import { generateToken, generateRefreshToken } from '../utils/helpers';
 
 /**
@@ -358,6 +359,51 @@ export const toggleHostelStatus = async (req: Request, res: Response, next: Next
             res.status(404).json({ message: 'Student not found.' });
             return;
         }
+
+        // --- Automatically sync FeeItem for Hostel based on the new hostelOption ---
+        const activeYear = await FeeCalculationService.getActiveAcademicYear();
+        if (activeYear) {
+            const hostelFeeType = await FeeType.findOne({
+                academicYear: activeYear.yearLabel,
+                category: 'hostel',
+                isActive: true
+            });
+
+            if (hostelFeeType) {
+                if (hostelOption) {
+                    // Enable hostel: create FeeItem if it doesn't exist
+                    const exists = await FeeItem.findOne({
+                        studentId: student._id,
+                        feeTypeId: hostelFeeType._id
+                    });
+                    if (!exists) {
+                        await FeeItem.create({
+                            feeTypeId: hostelFeeType._id,
+                            studentId: student._id,
+                            totalAmount: hostelFeeType.amount,
+                            amountPaid: 0,
+                            balance: hostelFeeType.amount,
+                            status: 'pending',
+                            dueDate: hostelFeeType.dueDate,
+                            academicYear: hostelFeeType.academicYear,
+                            semester: hostelFeeType.semester || 1
+                        });
+                    }
+                } else {
+                    // Disable hostel: delete unpaid FeeItem
+                    await FeeItem.deleteMany({
+                        studentId: student._id,
+                        feeTypeId: hostelFeeType._id,
+                        amountPaid: 0
+                    });
+                }
+            }
+        }
+
+        // Broadcast update to student in real-time
+        try {
+            emitFeeUpdate({ type: 'student_fee', action: 'updated', studentId: student._id.toString() });
+        } catch (_) { /* silent */ }
 
         res.json({
             message: `Hostel status ${hostelOption ? 'enabled' : 'disabled'} for ${student.firstName} ${student.lastName}.`,
