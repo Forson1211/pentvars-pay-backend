@@ -469,22 +469,14 @@ export const resetAllStudentFees = async (req: Request, res: Response, next: Nex
         for (const student of allStudents) {
             if (activeYear) {
                 try {
-                    let created = false;
+                    // Only create Sem 1 — Sem 2 is created on-demand when Sem 1 is paid
                     const sem1Fee = await StudentFee.findOne({ student: student._id, academicYear: activeYear._id, semester: 1 });
                     if (!sem1Fee) {
                         await FeeCalculationService.getOrCreateStudentFee(student as any, 1);
-                        created = true;
-                    }
-                    const sem2Fee = await StudentFee.findOne({ student: student._id, academicYear: activeYear._id, semester: 2 });
-                    if (!sem2Fee) {
-                        await FeeCalculationService.getOrCreateStudentFee(student as any, 2);
-                        created = true;
-                    }
-                    // Always run assignApplicableGlobalFees to ensure no missing global fee items
-                    const assignedCount = await FeeCalculationService.assignApplicableGlobalFees(student as any);
-                    if (created || assignedCount > 0) {
                         autoCreated++;
                     }
+                    // Assign applicable global fees (exam, dues, etc.)
+                    await FeeCalculationService.assignApplicableGlobalFees(student as any);
                 } catch (e: any) {
                     errors.push(`${student.firstName} ${student.lastName}: ${e.message}`);
                 }

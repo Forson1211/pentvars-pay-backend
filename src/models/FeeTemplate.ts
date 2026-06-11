@@ -9,6 +9,7 @@ export interface IFeeTemplate extends Document {
     programme: Types.ObjectId;
     level: string;
     tuitionPerSemester: number;
+    sem2TuitionPerSemester?: number; // Optional, defaults to tuitionPerSemester
     academicUserFee: number; // Annual
     srcFee: number; // Annual
     practicalFee: number;
@@ -54,6 +55,10 @@ const feeTemplateSchema = new Schema<IFeeTemplate>(
         tuitionPerSemester: {
             type: Number,
             required: [true, 'Tuition per semester is required'],
+            min: 0,
+        },
+        sem2TuitionPerSemester: {
+            type: Number,
             min: 0,
         },
         academicUserFee: {

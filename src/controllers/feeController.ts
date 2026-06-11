@@ -436,3 +436,47 @@ export const bulkAssignFees = async (req: Request, res: Response, next: NextFunc
         next(error);
     }
 };
+
+/**
+ * PUT /api/fees/types/:feeTypeId/bulk-deadline
+ * Admin: Update deadline for ALL student fee items of this type
+ */
+export const updateBulkFeeTypeDeadline = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+        const { feeTypeId } = req.params;
+        const { dueDate } = req.body;
+
+        if (!dueDate) {
+            res.status(400).json({ message: 'dueDate is required.' });
+            return;
+        }
+
+        const feeType = await FeeType.findById(feeTypeId);
+        if (!feeType) {
+            res.status(404).json({ message: 'Fee type not found.' });
+            return;
+        }
+
+        // 1. Update the FeeType template's dueDate
+        feeType.dueDate = new Date(dueDate);
+        await feeType.save();
+
+        // 2. Update all associated FeeItem records (for all students)
+        await FeeItem.updateMany(
+            { feeTypeId: feeType._id },
+            { $set: { dueDate: new Date(dueDate) } }
+        );
+
+        res.json({
+            message: 'Bulk deadline updated successfully for fee type and all student items.',
+            dueDate: feeType.dueDate
+        });
+
+        // 🔴 Notify all students in real-time
+        try {
+            emitFeeUpdate({ type: 'fee_type', action: 'updated' });
+        } catch (_) { /* silent */ }
+    } catch (error) {
+        next(error);
+    }
+};

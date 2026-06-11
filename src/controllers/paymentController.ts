@@ -920,16 +920,20 @@ export const getStudentPaymentInsights = async (req: Request, res: Response, nex
 
         const studentFees = await StudentFee.find({
             student: studentId, status: { $in: ['unpaid', 'partial'] }, dueDate: { $exists: true, $ne: null },
-        }).populate('academicYear');
+        }).populate('academicYear').sort({ semester: 1 });
 
-        const studentFeeDeadlines = studentFees
-            .filter(sf => sf.dueDate)
-            .map(sf => {
+        // Only show the CURRENT semester's deadline:
+        // → first unpaid/partial semester (Sem 1 until paid, then Sem 2)
+        const currentStudentFee = studentFees[0] || null;
+        const studentFeeDeadlines = currentStudentFee
+            ? (() => {
+                const sf = currentStudentFee;
                 const yearLabel = (sf.academicYear as any)?.yearLabel || '';
                 const dueDate = new Date(sf.dueDate!);
                 const daysLeft = Math.ceil((dueDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
-                return { name: `Academic Fees - ${yearLabel} S${sf.semester}`, category: 'tuition', balance: sf.balance, dueDate: sf.dueDate, daysLeft };
-            });
+                return [{ name: `Academic Fees - ${yearLabel} S${sf.semester}`, category: 'tuition', balance: sf.balance, dueDate: sf.dueDate, daysLeft }];
+            })()
+            : [];
 
         const upcomingDeadlines = [...feeItemDeadlines, ...studentFeeDeadlines]
             .sort((a, b) => a.daysLeft - b.daysLeft)

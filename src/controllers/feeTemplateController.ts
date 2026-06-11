@@ -13,7 +13,7 @@ export const createFeeTemplate = async (req: Request, res: Response, next: NextF
     try {
         const {
             academicYear, studentType, faculty, programme, level,
-            tuitionPerSemester, academicUserFee, srcFee,
+            tuitionPerSemester, sem2TuitionPerSemester, academicUserFee, srcFee,
             practicalFee, cipsFee, latePenalty,
             scholarshipDiscount, installmentAllowed, maxInstallments,
             dueDate,
@@ -45,6 +45,7 @@ export const createFeeTemplate = async (req: Request, res: Response, next: NextF
             programme,
             level,
             tuitionPerSemester,
+            sem2TuitionPerSemester: sem2TuitionPerSemester !== undefined && sem2TuitionPerSemester !== null ? Number(sem2TuitionPerSemester) : undefined,
             academicUserFee: academicUserFee || 0,
             srcFee: srcFee || 0,
             practicalFee: practicalFee || 0,
@@ -118,8 +119,8 @@ export const getFeeTemplateById = async (req: Request, res: Response, next: Next
         }
 
         // Also calculate the semester totals for preview
-        const semester1 = FeeCalculationService.calculateSemesterBreakdown(template, false);
-        const semester2 = FeeCalculationService.calculateSemesterBreakdown(template, false);
+        const semester1 = FeeCalculationService.calculateSemesterBreakdown(template, 1, false);
+        const semester2 = FeeCalculationService.calculateSemesterBreakdown(template, 2, false);
 
         res.json({
             ...template.toJSON(),
@@ -143,7 +144,7 @@ export const updateFeeTemplate = async (req: Request, res: Response, next: NextF
     try {
         const { id } = req.params;
         const allowedFields = [
-            'tuitionPerSemester', 'academicUserFee', 'srcFee', 'practicalFee',
+            'tuitionPerSemester', 'sem2TuitionPerSemester', 'academicUserFee', 'srcFee', 'practicalFee',
             'cipsFee', 'latePenalty', 'scholarshipDiscount',
             'installmentAllowed', 'maxInstallments', 'dueDate', 'isActive',
         ];
@@ -284,6 +285,7 @@ export const cloneFeeTemplate = async (req: Request, res: Response, next: NextFu
             programme: source.programme,
             level: source.level,
             tuitionPerSemester: source.tuitionPerSemester,
+            sem2TuitionPerSemester: source.sem2TuitionPerSemester,
             academicUserFee: source.academicUserFee,
             srcFee: source.srcFee,
             practicalFee: source.practicalFee,
@@ -359,6 +361,7 @@ export const bulkCloneFeeTemplates = async (req: Request, res: Response, next: N
                 programme: source.programme,
                 level: source.level,
                 tuitionPerSemester: source.tuitionPerSemester,
+                sem2TuitionPerSemester: source.sem2TuitionPerSemester,
                 academicUserFee: source.academicUserFee,
                 srcFee: source.srcFee,
                 practicalFee: source.practicalFee,

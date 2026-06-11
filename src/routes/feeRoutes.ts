@@ -9,6 +9,7 @@ import {
     deleteFeeType,
     assignFeeToStudent,
     bulkAssignFees,
+    updateBulkFeeTypeDeadline,
 } from '../controllers/feeController';
 import { authenticate, authorize } from '../middleware/auth';
 
@@ -27,6 +28,7 @@ router.get('/:feeId', getFeeById);
 router.get('/types/all', getAllFeeTypes);
 router.post('/types', authorize('admin'), createFeeType);
 router.put('/types/:feeTypeId', authorize('admin'), updateFeeType);
+router.put('/types/:feeTypeId/bulk-deadline', authorize('admin'), updateBulkFeeTypeDeadline);
 router.delete('/types/:feeTypeId', authorize('admin'), deleteFeeType);
 router.post('/assign', authorize('admin'), assignFeeToStudent);
 router.post('/bulk-assign', authorize('admin'), bulkAssignFees);

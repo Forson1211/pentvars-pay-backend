@@ -89,9 +89,12 @@ export class FeeCalculationService {
      */
     static calculateSemesterBreakdown(
         template: IFeeTemplate,
+        semester: 1 | 2 = 1,
         isLatePayment: boolean = false
     ): { breakdown: IFeeBreakdown; totalFee: number } {
-        const tuition = template.tuitionPerSemester;
+        const tuition = semester === 2 && template.sem2TuitionPerSemester !== undefined && template.sem2TuitionPerSemester !== null
+            ? template.sem2TuitionPerSemester
+            : template.tuitionPerSemester;
         const academicUserFee = Math.round((template.academicUserFee || 0) * 100) / 100;
         const srcFee = Math.round((template.srcFee || 0) * 100) / 100;
         const practicalFee = template.practicalFee || 0;
@@ -186,6 +189,7 @@ export class FeeCalculationService {
         // hostelFee is now entirely removed from StudentFee
         const { breakdown, totalFee } = this.calculateSemesterBreakdown(
             template,
+            semester,
             false
         );
 
@@ -223,6 +227,7 @@ export class FeeCalculationService {
 
         const { breakdown, totalFee } = this.calculateSemesterBreakdown(
             template,
+            studentFee.semester,
             studentFee.isLatePayment
         );
 
