@@ -438,7 +438,7 @@ export const getAdminDashboardSummary = async (_req: Request, res: Response, nex
 
         if (activeYear) {
             const feeAgg = await StudentFee.aggregate([
-                { $match: { academicYear: activeYear._id } },
+                { $match: { academicYear: activeYear._id, semester: 1 } },
                 {
                     $group: {
                         _id: null,
