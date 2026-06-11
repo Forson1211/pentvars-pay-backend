@@ -29,6 +29,7 @@ import {
     deleteFeeTemplate,
     cloneFeeTemplate,
     bulkCloneFeeTemplates,
+    updateBulkFeeTemplateDeadline,
 } from '../controllers/feeTemplateController';
 import {
     getRevenueReport,
@@ -76,6 +77,7 @@ router.delete('/programme/:id', deleteProgramme);
 // ──── Fee Template Management ────
 router.post('/fee-template', createFeeTemplate);
 router.get('/fee-templates', getAllFeeTemplates);
+router.put('/fee-template/bulk-deadline', updateBulkFeeTemplateDeadline);
 router.get('/fee-template/:id', getFeeTemplateById);
 router.put('/fee-template/:id', updateFeeTemplate);
 router.delete('/fee-template/:id', deleteFeeTemplate);

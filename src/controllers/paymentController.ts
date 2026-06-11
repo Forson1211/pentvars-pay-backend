@@ -48,6 +48,123 @@ async function updateLedger(
     }
 }
 
+/**
+ * Finalize a successful transaction: mark completed, save payment, update ledger, audit, and notify.
+ * Guaranteed to be called exactly once per successful payment from both webhook and redirect verify paths.
+ */
+async function finalizePaymentSuccess(
+    transaction: any,
+    paidAtDate: Date,
+    providerRef: string,
+    amountGHSPaid: number,
+    channel: string,
+    gatewayResponse: string
+): Promise<void> {
+    // ── 1. Duplicate check (idempotency) ──
+    if (transaction.status === 'completed' && transaction.webhookVerified) {
+        console.log(`[finalizePaymentSuccess] Duplicate processing blocked for ${transaction.reference}`);
+        return;
+    }
+
+    // ── 2. Mark transaction as successful ──
+    transaction.status = 'completed';
+    transaction.webhookVerified = true;
+    transaction.paidAt = paidAtDate;
+    transaction.providerReference = providerRef;
+    transaction.amount = amountGHSPaid;
+    transaction.metadata = {
+        ...transaction.metadata,
+        channel,
+        gatewayResponse,
+        paystackId: providerRef,
+    };
+    await transaction.save();
+
+    // ── 3. Create/Update Payment record ──
+    await Payment.findOneAndUpdate(
+        { transactionReference: transaction.reference },
+        {
+            student: transaction.studentId,
+            amount: amountGHSPaid,
+            paymentMethod: channel === 'mobile_money' ? 'mobile_money' :
+                channel === 'card' ? 'card' : 'bank_transfer',
+            transactionReference: transaction.reference,
+            status: 'completed',
+            paymentDate: paidAtDate,
+            description: transaction.description,
+            studentFee: transaction.studentFeeId,
+            feeItem: transaction.feeItemId,
+            metadata: { channel, gatewayResponse },
+        },
+        { upsert: true, new: true }
+    ).catch(console.error);
+
+    // ── 4. Update Ledger ──
+    try {
+        let feeItem: any = null;
+        let academicFee: any = null;
+
+        if (transaction.feeItemId) {
+            feeItem = await FeeItem.findById(transaction.feeItemId);
+        }
+        if (transaction.studentFeeId) {
+            academicFee = await StudentFee.findById(transaction.studentFeeId);
+        }
+
+        await updateLedger(feeItem, academicFee, amountGHSPaid, transaction.category);
+    } catch (ledgerError: any) {
+        console.error(`[finalizePaymentSuccess] Ledger update failed for ${transaction.reference}:`, ledgerError);
+        await AuditLog.create({
+            action: 'payment_failed',
+            reference: transaction.reference,
+            studentId: transaction.studentId,
+            details: { error: 'Ledger update failed: ' + ledgerError.message },
+            isError: true,
+        }).catch(console.error);
+    }
+
+    // ── 5. Audit success ──
+    await AuditLog.create({
+        action: 'payment_success',
+        reference: transaction.reference,
+        studentId: transaction.studentId,
+        amount: amountGHSPaid,
+        category: transaction.category,
+        channel,
+        details: { paystackId: providerRef, gatewayResponse },
+        isError: false,
+    }).catch(console.error);
+
+    // ── 6. Notify admins & emit socket update ──
+    try {
+        const student = await User.findById(transaction.studentId).select('firstName lastName');
+        const admins = await User.find({ role: 'admin' }).select('_id');
+        if (admins.length > 0 && student) {
+            const adminNotifications = admins.map(admin => ({
+                recipientId: admin._id,
+                title: 'Payment Confirmed',
+                body: `${student.firstName} ${student.lastName} paid GHS ${amountGHSPaid.toFixed(2)} — ${transaction.description}`,
+                type: 'success',
+                data: { transactionId: transaction._id, studentId: transaction.studentId },
+            }));
+            await Notification.insertMany(adminNotifications);
+            
+            // REAL-TIME SOCKET UPDATE
+            emitPaymentUpdate({
+                transactionId: transaction._id.toString(),
+                studentId: transaction.studentId.toString(),
+                studentName: `${student.firstName} ${student.lastName}`,
+                amount: amountGHSPaid,
+                description: transaction.description,
+                reference: transaction.reference,
+                category: transaction.category
+            });
+        }
+    } catch (notifyError) {
+        console.error('[finalizePaymentSuccess] Admin notification error:', notifyError);
+    }
+}
+
 // ─── INITIATE PAYMENT ────────────────────────────────────────────────────────
 
 /**
@@ -401,107 +518,16 @@ export const handleWebhook = async (req: Request, res: Response): Promise<void> 
         return;
     }
 
-    // ── 5. Mark transaction as successful ──────────────────────────────────
-    transaction.status = 'completed';
-    transaction.webhookVerified = true;
-    transaction.paidAt = new Date(data?.paid_at || Date.now());
-    transaction.providerReference = data?.id?.toString();
-    transaction.amount = amountGHSPaid;
-    transaction.metadata = {
-        ...transaction.metadata,
+    // ── 5. Finalize payment success and propagate ─────────────────────────
+    await finalizePaymentSuccess(
+        transaction,
+        new Date(data?.paid_at || Date.now()),
+        data?.id?.toString() || 'N/A',
+        amountGHSPaid,
         channel,
-        gatewayResponse,
-        paystackId: data?.id,
-        customerEmail: data?.customer?.email,
-        authorizationCode: data?.authorization?.authorization_code,
-    };
-    await transaction.save();
-
-    // ── 6. Update Payment record for reporting ────────────────────────────
-    await Payment.findOneAndUpdate(
-        { transactionReference: reference },
-        {
-            student: transaction.studentId,
-            amount: amountGHSPaid,
-            paymentMethod: channel === 'mobile_money' ? 'mobile_money' :
-                channel === 'card' ? 'card' : 'bank_transfer',
-            transactionReference: reference,
-            status: 'completed',
-            paymentDate: transaction.paidAt,
-            description: transaction.description,
-            studentFee: transaction.studentFeeId,
-            feeItem: transaction.feeItemId,
-            metadata: { channel, gatewayResponse },
-        },
-        { upsert: true, new: true }
-    ).catch(console.error);
-
-    // ── 7. Update ledger ──────────────────────────────────────────────────
-    try {
-        let feeItem: any = null;
-        let academicFee: any = null;
-
-        if (transaction.feeItemId) {
-            feeItem = await FeeItem.findById(transaction.feeItemId);
-        }
-        if (transaction.studentFeeId) {
-            academicFee = await StudentFee.findById(transaction.studentFeeId);
-        }
-
-        await updateLedger(feeItem, academicFee, amountGHSPaid, transaction.category);
-    } catch (ledgerError: any) {
-        console.error(`[Webhook] Ledger update failed for ${reference}:`, ledgerError);
-        await AuditLog.create({
-            action: 'payment_failed',
-            reference,
-            studentId: transaction.studentId,
-            details: { error: 'Ledger update failed: ' + ledgerError.message },
-            isError: true,
-        }).catch(console.error);
-    }
-
-    // ── 8. Audit success ──────────────────────────────────────────────────
-    await AuditLog.create({
-        action: 'payment_success',
-        reference,
-        studentId: transaction.studentId,
-        amount: amountGHSPaid,
-        category: transaction.category,
-        channel,
-        details: { paystackId: data?.id, gatewayResponse },
-        isError: false,
-    }).catch(console.error);
-
-    // ── 9. Notify admins ──────────────────────────────────────────────────
-    try {
-        const student = await User.findById(transaction.studentId).select('firstName lastName');
-        const admins = await User.find({ role: 'admin' }).select('_id');
-        if (admins.length > 0 && student) {
-            const adminNotifications = admins.map(admin => ({
-                recipientId: admin._id,
-                title: 'Payment Confirmed',
-                body: `${student.firstName} ${student.lastName} paid GHS ${amountGHSPaid.toFixed(2)} — ${transaction.description}`,
-                type: 'success',
-                data: { transactionId: transaction._id, studentId: transaction.studentId },
-            }));
-            await Notification.insertMany(adminNotifications);
-            
-            // ── 10. REAL-TIME SOCKET UPDATE ──
-            emitPaymentUpdate({
-                transactionId: transaction._id.toString(),
-                studentId: transaction.studentId.toString(),
-                studentName: `${student.firstName} ${student.lastName}`,
-                amount: amountGHSPaid,
-                description: transaction.description,
-                reference: transaction.reference,
-                category: transaction.category
-            });
-        }
-    } catch (notifyError) {
-        console.error('[Webhook] Admin notification error:', notifyError);
-    }
-
-    // Always return 200 to Paystack to prevent retries
+        gatewayResponse
+    );
+    // Always return 200 to Paystack to prevent retries
     res.status(200).json({ message: 'OK' });
 };
 
@@ -537,32 +563,12 @@ export const verifyPayment = async (req: Request, res: Response, next: NextFunct
                 const amountGHSPaid = psVerify.data.amount / 100;
 
                 if (Math.abs(amountGHSPaid - transaction.amountExpected) <= 0.01) {
-                    // Update transaction
-                    transaction.status = 'completed';
-                    transaction.webhookVerified = true;
-                    transaction.paidAt = new Date(psVerify.data.paid_at);
-                    transaction.providerReference = psVerify.data.id?.toString();
-                    transaction.amount = amountGHSPaid;
-                    await transaction.save();
+                    const channel = psVerify.data.channel || 'paystack';
+                    const gatewayResponse = psVerify.data.gateway_response || 'Approved';
+                    const paidAt = psVerify.data.paid_at ? new Date(psVerify.data.paid_at) : new Date();
+                    const providerRef = psVerify.data.id?.toString() || 'N/A';
 
-                    // Update ledger
-                    let feeItem: any = transaction.feeItemId ? await FeeItem.findById(transaction.feeItemId) : null;
-                    let academicFee: any = transaction.studentFeeId ? await StudentFee.findById(transaction.studentFeeId) : null;
-                    await updateLedger(feeItem, academicFee, amountGHSPaid, transaction.category);
-
-                    // ── REAL-TIME SOCKET UPDATE ──
-                    const student = await User.findById(transaction.studentId).select('firstName lastName');
-                    if (student) {
-                        emitPaymentUpdate({
-                            transactionId: transaction._id.toString(),
-                            studentId: transaction.studentId.toString(),
-                            studentName: `${student.firstName} ${student.lastName}`,
-                            amount: amountGHSPaid,
-                            description: transaction.description,
-                            reference: transaction.reference,
-                            category: transaction.category
-                        });
-                    }
+                    await finalizePaymentSuccess(transaction, paidAt, providerRef, amountGHSPaid, channel, gatewayResponse);
                 }
             } else if (psVerify.status && psVerify.data?.status === 'failed') {
                 // Paystack explicitly reports failure — mark as failed

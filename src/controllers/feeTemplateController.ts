@@ -387,3 +387,56 @@ export const bulkCloneFeeTemplates = async (req: Request, res: Response, next: N
         next(error);
     }
 };
+
+/**
+ * PUT /api/admin/fee-template/bulk-deadline
+ * Admin: Update deadline for ALL templates matching filters (e.g. academicYear, studentType)
+ */
+export const updateBulkFeeTemplateDeadline = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+        const { academicYear, studentType, dueDate } = req.body;
+
+        if (!academicYear || !dueDate) {
+            res.status(400).json({ message: 'academicYear and dueDate are required.' });
+            return;
+        }
+
+        const filter: Record<string, any> = { academicYear };
+        if (studentType && studentType !== 'all') {
+            filter.studentType = studentType;
+        }
+
+        // 1. Find all matching templates
+        const templates = await FeeTemplate.find(filter);
+        if (templates.length === 0) {
+            res.status(404).json({ message: 'No fee templates found for the specified filters.' });
+            return;
+        }
+
+        const templateIds = templates.map(t => t._id);
+
+        // 2. Update the FeeTemplate records
+        await FeeTemplate.updateMany(filter, { $set: { dueDate: new Date(dueDate) } });
+
+        // 3. Propagate the dueDate update to all affected StudentFee records
+        const result = await StudentFee.updateMany(
+            { feeTemplate: { $in: templateIds } },
+            { $set: { dueDate: new Date(dueDate) } }
+        );
+
+        res.json({
+            message: `General deadline updated for ${templates.length} templates and ${result.modifiedCount} student fee records.`,
+            dueDate: new Date(dueDate),
+            count: templates.length,
+            recalculatedCount: result.modifiedCount
+        });
+
+        // 🔴 Notify all students to refresh
+        try {
+            emitFeeUpdate({ type: 'fee_template', action: 'updated' });
+        } catch (_) { /* silent */ }
+    } catch (error) {
+        next(error);
+    }
+};
+

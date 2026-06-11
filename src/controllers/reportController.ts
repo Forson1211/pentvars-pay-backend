@@ -58,7 +58,18 @@ export const getRevenueReport = async (req: Request, res: Response, next: NextFu
                     category: {
                         $cond: [
                             { $gt: [{ $size: '$fType' }, 0] },
-                            { $arrayElemAt: ['$fType.category', 0] },
+                            {
+                                $let: {
+                                    vars: { cat: { $arrayElemAt: ['$fType.category', 0] } },
+                                    in: {
+                                        $cond: [
+                                            { $in: ['$$cat', ['hostel', 'resit', 'supplementary', 'exam']] },
+                                            '$$cat',
+                                            'other'
+                                        ]
+                                    }
+                                }
+                            },
                             'academic'
                         ]
                     }
@@ -438,7 +449,7 @@ export const getAdminDashboardSummary = async (_req: Request, res: Response, nex
 
         if (activeYear) {
             const feeAgg = await StudentFee.aggregate([
-                { $match: { academicYear: activeYear._id, semester: 1 } },
+                { $match: { academicYear: activeYear._id } },
                 {
                     $group: {
                         _id: null,
@@ -490,7 +501,18 @@ export const getAdminDashboardSummary = async (_req: Request, res: Response, nex
                         category: {
                             $cond: [
                                 { $gt: [{ $size: '$fType' }, 0] },
-                                { $arrayElemAt: ['$fType.category', 0] },
+                                {
+                                    $let: {
+                                        vars: { cat: { $arrayElemAt: ['$fType.category', 0] } },
+                                        in: {
+                                            $cond: [
+                                                { $in: ['$$cat', ['hostel', 'resit', 'supplementary', 'exam']] },
+                                                '$$cat',
+                                                'other'
+                                            ]
+                                        }
+                                    }
+                                },
                                 'academic'
                             ]
                         }
