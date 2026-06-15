@@ -631,9 +631,10 @@ export const verifyPayment = async (req: Request, res: Response, next: NextFunct
 export const cancelPayment = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
         const { reference } = req.params;
+        const refStr = Array.isArray(reference) ? reference[0] : reference;
         const student = req.user!;
 
-        const transaction = await Transaction.findOne({ reference });
+        const transaction = await Transaction.findOne({ reference: refStr });
         if (!transaction) {
             res.status(404).json({ message: 'Transaction not found.' });
             return;
@@ -647,7 +648,7 @@ export const cancelPayment = async (req: Request, res: Response, next: NextFunct
 
         // Check actual status on Paystack before cancelling
         try {
-            const psVerify = await PaystackService.verifyTransaction(reference);
+            const psVerify = await PaystackService.verifyTransaction(refStr);
             if (psVerify.status && psVerify.data?.status === 'success') {
                 // The payment has actually been completed! Finalize it instead of cancelling!
                 const amountGHSPaid = psVerify.data.amount / 100;
