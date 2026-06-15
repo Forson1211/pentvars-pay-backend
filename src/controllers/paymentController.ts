@@ -144,7 +144,12 @@ async function finalizePaymentSuccess(
             type: 'student_fee',
             action: 'updated',
             studentId: transaction.studentId.toString(),
-            data: { reference: transaction.reference, amount: amountGHSPaid, status: 'completed' }
+            data: { 
+                reference: transaction.reference, 
+                amount: amountGHSPaid, 
+                status: 'completed',
+                transactionId: transaction._id.toString()
+            }
         });
 
         const admins = await User.find({ role: 'admin' }).select('_id');
