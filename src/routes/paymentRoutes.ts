@@ -16,6 +16,8 @@ import {
     getAuditLogs,
     clearTransactionHistory,
     debugMyPayments,
+    handlePaymentCallback,
+    handlePaymentCancelCallback,
 } from '../controllers/paymentController';
 import { authenticate, authorize } from '../middleware/auth';
 
@@ -26,6 +28,10 @@ const router = Router();
 // The rawBody middleware must capture raw bytes for HMAC signature verification.
 // See server.ts — the /api/payments/webhook route must exclude JSON parsing.
 router.post('/webhook', handleWebhook);
+
+// Public Callback Redirect Handlers from Paystack
+router.get('/callback/:reference', handlePaymentCallback);
+router.get('/cancel/:reference', handlePaymentCancelCallback);
 
 // ─── Authenticated routes ────────────────────────────────────────────────────
 router.use(authenticate);

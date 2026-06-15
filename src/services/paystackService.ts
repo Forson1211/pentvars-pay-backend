@@ -145,7 +145,8 @@ export class PaystackService {
         email: string,
         reference: string,
         metadata: Record<string, any> = {},
-        channels: string[] = ['card', 'mobile_money', 'bank_transfer', 'ussd']
+        channels: string[] = ['card', 'mobile_money', 'bank_transfer', 'ussd'],
+        callbackUrl?: string
     ): Promise<PaystackInitializeResponse> {
         const amountPesewas = Math.round(amountGHS * 100);
 
@@ -155,8 +156,10 @@ export class PaystackService {
             reference,
             currency: 'GHS',
             channels,
+            callback_url: callbackUrl,
             metadata: {
                 ...metadata,
+                cancel_action: metadata.cancel_action,
                 custom_fields: [
                     {
                         display_name: 'Student ID',

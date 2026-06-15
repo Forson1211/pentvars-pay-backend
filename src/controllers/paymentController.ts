@@ -10,7 +10,7 @@ import { AuditLog } from '../models/AuditLog';
 import { generateReference } from '../utils/helpers';
 import { FeeCalculationService } from '../services/feeCalculationService';
 import { PaystackService } from '../services/paystackService';
-import { emitPaymentUpdate, emitPaymentCancelled } from '../services/socketService';
+import { emitPaymentUpdate, emitPaymentCancelled, emitFeeUpdate } from '../services/socketService';
 import { config } from '../config/env';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -138,6 +138,15 @@ async function finalizePaymentSuccess(
     // ── 6. Notify admins & emit socket update ──
     try {
         const student = await User.findById(transaction.studentId).select('firstName lastName');
+        
+        // Emit fee:updated to the student so their dashboard refreshes in real-time
+        emitFeeUpdate({
+            type: 'student_fee',
+            action: 'updated',
+            studentId: transaction.studentId.toString(),
+            data: { reference: transaction.reference, amount: amountGHSPaid, status: 'completed' }
+        });
+
         const admins = await User.find({ role: 'admin' }).select('_id');
         if (admins.length > 0 && student) {
             const adminNotifications = admins.map(admin => ({
@@ -330,6 +339,12 @@ export const initiatePayment = async (req: Request, res: Response, next: NextFun
         let paystackResult: any = null;
         let paystackError: string | null = null;
 
+        const host = req.get('host') || 'localhost:5000';
+        const isLocal = host.includes('localhost') || host.includes('127.0.0.1') || host.includes('172.') || host.includes('192.168.');
+        const protocol = isLocal ? 'http' : 'https';
+        const callbackUrl = `${protocol}://${host}/api/payments/callback/${reference}`;
+        const cancelUrl = `${protocol}://${host}/api/payments/cancel/${reference}`;
+
         try {
             const paystackResponse = await PaystackService.initializeTransaction(
                 finalAmount,
@@ -342,8 +357,10 @@ export const initiatePayment = async (req: Request, res: Response, next: NextFun
                     description,
                     feeItemId: feeItem?._id?.toString(),
                     studentFeeId: academicFee?._id?.toString(),
+                    cancel_action: cancelUrl,
                 },
-                determineSupportedChannels(paymentMethod, category)
+                determineSupportedChannels(paymentMethod, category),
+                callbackUrl
             );
 
             if (paystackResponse.status && paystackResponse.data) {
@@ -636,6 +653,14 @@ export const cancelPayment = async (req: Request, res: Response, next: NextFunct
             cancelledBy: 'student',
         };
         await transaction.save();
+
+        // Emit fee:updated to student so their dashboard updates
+        emitFeeUpdate({
+            type: 'student_fee',
+            action: 'updated',
+            studentId: transaction.studentId.toString(),
+            data: { reference, status: 'cancelled' }
+        });
 
         await AuditLog.create({
             action: 'payment_cancelled',
@@ -1274,5 +1299,246 @@ export const getAuditLogs = async (req: Request, res: Response, next: NextFuncti
         res.json({ logs: logs.map(l => l.toJSON()), total, page });
     } catch (error) {
         next(error);
+    }
+};
+
+/**
+ * GET /api/payments/callback/:reference
+ * 
+ * Public callback URL registered with Paystack.
+ * Paystack redirects the customer's browser here on success.
+ * We verify the transaction and output a clean HTML page that the WebView intercepts.
+ */
+export const handlePaymentCallback = async (req: Request, res: Response): Promise<void> => {
+    try {
+        const { reference } = req.params;
+        const refStr = Array.isArray(reference) ? reference[0] : reference;
+        let transaction = await Transaction.findOne({ reference: refStr });
+        if (!transaction) {
+            res.status(404).send('<h3>Transaction not found</h3>');
+            return;
+        }
+
+        // Verify with Paystack if not already completed
+        if (transaction.status !== 'completed') {
+            try {
+                const psVerify = await PaystackService.verifyTransaction(refStr);
+                if (psVerify.status && psVerify.data?.status === 'success') {
+                    const amountGHSPaid = psVerify.data.amount / 100;
+                    if (Math.abs(amountGHSPaid - transaction.amountExpected) <= 0.01) {
+                        const channel = psVerify.data.channel || 'paystack';
+                        const gatewayResponse = psVerify.data.gateway_response || 'Approved';
+                        const paidAt = psVerify.data.paid_at ? new Date(psVerify.data.paid_at) : new Date();
+                        const providerRef = psVerify.data.id?.toString() || 'N/A';
+
+                        await finalizePaymentSuccess(transaction, paidAt, providerRef, amountGHSPaid, channel, gatewayResponse);
+                        // Refresh the transaction state
+                        transaction = (await Transaction.findOne({ reference: refStr })) || transaction;
+                    }
+                }
+            } catch (err) {
+                console.error('[handlePaymentCallback] Paystack verify error:', err);
+            }
+        }
+
+        // Return a simple, beautiful success page with blue and gold institutional theme
+        res.send(`
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                <title>Payment Successful</title>
+                <style>
+                    body {
+                        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+                        background-color: #F8F9FA;
+                        display: flex;
+                        justify-content: center;
+                        align-items: center;
+                        height: 100vh;
+                        margin: 0;
+                    }
+                    .card {
+                        background: white;
+                        padding: 30px;
+                        border-radius: 16px;
+                        box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
+                        text-align: center;
+                        max-width: 320px;
+                        width: 100%;
+                    }
+                    .icon {
+                        width: 72px;
+                        height: 72px;
+                        background: #10B981;
+                        color: white;
+                        border-radius: 50%;
+                        display: flex;
+                        align-items: center;
+                        justify-content: center;
+                        margin: 0 auto 20px;
+                        font-size: 36px;
+                    }
+                    h2 {
+                        color: #1B3A5C;
+                        margin: 0 0 10px;
+                        font-weight: 700;
+                    }
+                    p {
+                        color: #64748B;
+                        font-size: 14px;
+                        margin: 0 0 20px;
+                        line-height: 1.5;
+                    }
+                    .ref {
+                        font-size: 11px;
+                        color: #94A3B8;
+                        background: #F1F5F9;
+                        padding: 6px 12px;
+                        border-radius: 8px;
+                        display: inline-block;
+                    }
+                </style>
+            </head>
+            <body>
+                <div class="card">
+                    <div class="icon">✓</div>
+                    <h2>Payment Confirmed</h2>
+                    <p>Your transaction was verified successfully. You can return to the app.</p>
+                    <span class="ref">Ref: ${refStr}</span>
+                </div>
+            </body>
+            </html>
+        `);
+    } catch (error) {
+        console.error('[handlePaymentCallback] Handler error:', error);
+        res.status(500).send('<h3>An error occurred processing the callback</h3>');
+    }
+};
+
+/**
+ * GET /api/payments/cancel/:reference
+ * 
+ * Public callback URL registered with Paystack.
+ * Paystack redirects the customer's browser here when they click cancel.
+ * We mark the transaction as cancelled and return a clean HTML page.
+ */
+export const handlePaymentCancelCallback = async (req: Request, res: Response): Promise<void> => {
+    try {
+        const { reference } = req.params;
+        const refStr = Array.isArray(reference) ? reference[0] : reference;
+        const transaction = await Transaction.findOne({ reference: refStr });
+        if (!transaction) {
+            res.status(404).send('<h3>Transaction not found</h3>');
+            return;
+        }
+
+        if (['pending', 'processing'].includes(transaction.status)) {
+            transaction.status = 'cancelled';
+            transaction.metadata = {
+                ...transaction.metadata,
+                cancelledAt: new Date().toISOString(),
+                cancelledBy: 'student_redirect',
+            };
+            await transaction.save();
+
+            // Emit socket updates to student & admin
+            emitFeeUpdate({
+                type: 'student_fee',
+                action: 'updated',
+                studentId: transaction.studentId.toString(),
+                data: { reference: refStr, status: 'cancelled' }
+            });
+
+            try {
+                const studentUser = await User.findById(transaction.studentId).select('firstName lastName');
+                if (studentUser) {
+                    emitPaymentCancelled({
+                        transactionId: transaction._id.toString(),
+                        studentId: transaction.studentId.toString(),
+                        studentName: `${studentUser.firstName} ${studentUser.lastName}`,
+                        amount: transaction.amount,
+                        description: transaction.description,
+                        reference: transaction.reference,
+                        category: transaction.category,
+                    });
+                }
+            } catch (err) {
+                console.error('[handlePaymentCancelCallback] Socket emit failed:', err);
+            }
+        }
+
+        // Return a simple cancel page
+        res.send(`
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                <title>Payment Cancelled</title>
+                <style>
+                    body {
+                        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+                        background-color: #F8F9FA;
+                        display: flex;
+                        justify-content: center;
+                        align-items: center;
+                        height: 100vh;
+                        margin: 0;
+                    }
+                    .card {
+                        background: white;
+                        padding: 30px;
+                        border-radius: 16px;
+                        box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
+                        text-align: center;
+                        max-width: 320px;
+                        width: 100%;
+                    }
+                    .icon {
+                        width: 72px;
+                        height: 72px;
+                        background: #64748B;
+                        color: white;
+                        border-radius: 50%;
+                        display: flex;
+                        align-items: center;
+                        justify-content: center;
+                        margin: 0 auto 20px;
+                        font-size: 36px;
+                    }
+                    h2 {
+                        color: #1B3A5C;
+                        margin: 0 0 10px;
+                        font-weight: 700;
+                    }
+                    p {
+                        color: #64748B;
+                        font-size: 14px;
+                        margin: 0 0 20px;
+                        line-height: 1.5;
+                    }
+                    .ref {
+                        font-size: 11px;
+                        color: #94A3B8;
+                        background: #F1F5F9;
+                        padding: 6px 12px;
+                        border-radius: 8px;
+                        display: inline-block;
+                    }
+                </style>
+            </head>
+            <body>
+                <div class="card">
+                    <div class="icon">✕</div>
+                    <h2>Payment Cancelled</h2>
+                    <p>You cancelled the payment request. You can return to the app.</p>
+                    <span class="ref">Ref: ${refStr}</span>
+                </div>
+            </body>
+            </html>
+        `);
+    } catch (error) {
+        console.error('[handlePaymentCancelCallback] Handler error:', error);
+        res.status(500).send('<h3>An error occurred processing the cancellation</h3>');
     }
 };

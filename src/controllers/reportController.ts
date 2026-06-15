@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import { StudentFee } from '../models/StudentFee';
 import { Payment } from '../models/Payment';
+import { Transaction } from '../models/Transaction';
 import { User } from '../models/User';
 import { FeeTemplate } from '../models/FeeTemplate';
 import { AcademicYear } from '../models/AcademicYear';
@@ -449,7 +450,7 @@ export const getAdminDashboardSummary = async (_req: Request, res: Response, nex
 
         if (activeYear) {
             const feeAgg = await StudentFee.aggregate([
-                { $match: { academicYear: activeYear._id } },
+                { $match: { academicYear: activeYear._id, semester: 1 } },
                 {
                     $group: {
                         _id: null,
@@ -545,11 +546,23 @@ export const getAdminDashboardSummary = async (_req: Request, res: Response, nex
             }
         }
 
-        // Recent payments (last 10)
-        const recentPayments = await Payment.find({ status: 'completed' })
-            .sort({ paymentDate: -1 })
+        // Recent transactions (last 10)
+        const recentTransactions = await Transaction.find()
+            .sort({ createdAt: -1 })
             .limit(10)
-            .populate('student', 'firstName lastName studentId');
+            .populate('studentId', 'firstName lastName studentId');
+
+        const recentPayments = recentTransactions.map(t => {
+            const json = t.toJSON() as any;
+            if (json.studentId) {
+                json.student = json.studentId;
+                delete json.studentId;
+            }
+            if (!json.paymentDate) {
+                json.paymentDate = json.paidAt || json.createdAt;
+            }
+            return json;
+        });
 
         // Student distribution
         const studentDistribution = await User.aggregate([
@@ -574,7 +587,7 @@ export const getAdminDashboardSummary = async (_req: Request, res: Response, nex
                 totalAcademicYears,
             },
             currentYearFinancials: currentYearStats,
-            recentPayments: recentPayments.map(p => p.toJSON()),
+            recentPayments,
             studentDistribution: studentDistribution.map(d => ({
                 stream: d._id.stream || 'N/A',
                 nationality: d._id.nationality || 'N/A',

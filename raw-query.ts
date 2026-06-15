@@ -13,23 +13,19 @@ const run = async () => {
             return;
         }
 
-        console.log('--- RAW TEMPLATES ---');
-        const templates = await db.collection('feetemplates').find().toArray();
-        for (const t of templates) {
-            console.log(`Template ID: ${t._id}, Level: ${t.level}, StudentType: ${t.studentType}`);
-            console.log(`  tuitionPerSemester: ${t.tuitionPerSemester}`);
-            console.log(`  academicUserFee: ${t.academicUserFee}`);
-            console.log(`  srcFee: ${t.srcFee}`);
-            console.log(`  practicalFee: ${t.practicalFee}`);
-        }
+        console.log('--- TRANSACTIONS COUNT & STATUS ---');
+        const transactions = await db.collection('transactions').find().toArray();
+        console.log(`Total transactions: ${transactions.length}`);
+        transactions.forEach(t => {
+            console.log(`Tx ID: ${t._id}, Ref: ${t.reference}, Status: ${t.status}, Category: ${t.category}, Amount: ${t.amount}`);
+        });
 
-        console.log('\n--- RAW STUDENT FEES ---');
-        const fees = await db.collection('studentfees').find().toArray();
-        for (const f of fees) {
-            console.log(`StudentFee ID: ${f._id}, Student: ${f.student}, Semester: ${f.semester}`);
-            console.log(`  totalFee: ${f.totalFee}`);
-            console.log(`  breakdown:`, JSON.stringify(f.breakdown));
-        }
+        console.log('\n--- PAYMENTS COUNT & STATUS ---');
+        const payments = await db.collection('payments').find().toArray();
+        console.log(`Total payments: ${payments.length}`);
+        payments.forEach(p => {
+            console.log(`Pay ID: ${p._id}, Ref: ${p.transactionReference}, Status: ${p.status}, Amount: ${p.amount}`);
+        });
 
         await mongoose.disconnect();
     } catch (err) {
