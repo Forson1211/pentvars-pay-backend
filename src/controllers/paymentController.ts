@@ -645,10 +645,28 @@ export const cancelPayment = async (req: Request, res: Response, next: NextFunct
             return;
         }
 
-        // Only pending/processing transactions can be cancelled
-        if (!['pending', 'processing'].includes(transaction.status)) {
-            res.status(400).json({ message: `Cannot cancel a transaction with status '${transaction.status}'.` });
-            return;
+        // Check actual status on Paystack before cancelling
+        try {
+            const psVerify = await PaystackService.verifyTransaction(reference);
+            if (psVerify.status && psVerify.data?.status === 'success') {
+                // The payment has actually been completed! Finalize it instead of cancelling!
+                const amountGHSPaid = psVerify.data.amount / 100;
+                const channel = psVerify.data.channel || 'paystack';
+                const gatewayResponse = psVerify.data.gateway_response || 'Approved';
+                const paidAt = psVerify.data.paid_at ? new Date(psVerify.data.paid_at) : new Date();
+                const providerRef = psVerify.data.id?.toString() || 'N/A';
+
+                await finalizePaymentSuccess(transaction, paidAt, providerRef, amountGHSPaid, channel, gatewayResponse);
+                
+                res.status(400).json({ 
+                    message: 'Cannot cancel this payment because it has already been completed successfully on Paystack.',
+                    status: 'completed',
+                    transaction: transaction.toJSON()
+                });
+                return;
+            }
+        } catch (psError) {
+            console.error('[cancelPayment] Paystack status check failed:', psError);
         }
 
         transaction.status = 'cancelled';
