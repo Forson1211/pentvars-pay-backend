@@ -41,7 +41,7 @@ import {
     getStudentCountByGroups,
     getPaymentList,
 } from '../controllers/reportController';
-import { getAdminHierarchy, createStaff, getAdvancedStats, impersonateUser, updateStaff, deleteStaff, toggleHostelStatus, resetAllStudentFees } from '../controllers/adminController';
+import { getAdminHierarchy, createStaff, getAdvancedStats, impersonateUser, updateStaff, deleteStaff, toggleHostelStatus, resetAllStudentFees, getAuditLogs, deleteAuditLog, clearAuditLogs } from '../controllers/adminController';
 import { previewPromotion, promoteStudents } from '../controllers/promotionController';
 import { authenticate, authorize } from '../middleware/auth';
 import { Request, Response, NextFunction } from 'express';
@@ -122,6 +122,11 @@ router.post('/reconcile', async (req: Request, res: Response, next: NextFunction
         next(error);
     }
 });
+
+// ──── Audit Logs ────
+router.get('/audit-logs', getAuditLogs);
+router.delete('/audit-logs/:id', deleteAuditLog);
+router.delete('/audit-logs', clearAuditLogs);
 
 export default router;
 

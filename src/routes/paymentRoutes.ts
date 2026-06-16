@@ -18,6 +18,11 @@ import {
     debugMyPayments,
     handlePaymentCallback,
     handlePaymentCancelCallback,
+    getPaymentStatus,
+    adminVerifyAndConfirm,
+    adminAdjustBalance,
+    adminRecordPayment,
+    adminManualApprove,
 } from '../controllers/paymentController';
 import { authenticate, authorize } from '../middleware/auth';
 
@@ -44,6 +49,7 @@ router.get('/debug/my-data', debugMyPayments);
 router.get('/receipt/:transactionId', generateReceipt);
 router.get('/student-insights', getStudentPaymentInsights);
 router.get('/verify/:reference', verifyPayment);
+router.get('/status/:reference', getPaymentStatus);    // lightweight polling endpoint
 router.patch('/:reference/cancel', cancelPayment);
 
 // Admin-only routes
@@ -53,6 +59,10 @@ router.get('/all', authorize('admin'), getAllTransactions);
 router.get('/export', authorize('admin'), exportReport);
 router.get('/daily-summary', authorize('admin'), getDailySummary);
 router.get('/audit-logs', authorize('admin'), getAuditLogs);
+router.post('/admin/verify', authorize('admin'), adminVerifyAndConfirm);
+router.post('/admin/adjust-balance', authorize('admin'), adminAdjustBalance);
+router.post('/admin/record-payment', authorize('admin'), adminRecordPayment);
+router.post('/admin/manual-approve', authorize('admin'), adminManualApprove);
 
 // Generic get by ID (must be last due to param matching)
 router.get('/:transactionId', getTransactionById);

@@ -52,7 +52,7 @@ async function updateLedger(
  * Finalize a successful transaction: mark completed, save payment, update ledger, audit, and notify.
  * Guaranteed to be called exactly once per successful payment from both webhook and redirect verify paths.
  */
-async function finalizePaymentSuccess(
+export async function finalizePaymentSuccess(
     transaction: any,
     paidAtDate: Date,
     providerRef: string,
@@ -631,7 +631,7 @@ export const verifyPayment = async (req: Request, res: Response, next: NextFunct
 export const cancelPayment = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
         const { reference } = req.params;
-        const refStr = Array.isArray(reference) ? reference[0] : reference;
+        const refStr = (Array.isArray(reference) ? reference[0] : reference) as string;
         const student = req.user!;
 
         const transaction = await Transaction.findOne({ reference: refStr });
@@ -916,16 +916,33 @@ export const getStudentPaymentInsights = async (req: Request, res: Response, nex
         sixMonthsAgo.setDate(1);
         sixMonthsAgo.setHours(0, 0, 0, 0);
 
-        const completedTransactions = await Transaction.find({
-            studentId,
-            status: 'completed',
-            webhookVerified: true,
-            createdAt: { $gte: sixMonthsAgo },
-        }).sort({ createdAt: 1 });
+        const now = new Date();
+
+        // Parallelize fetching transaction history, general fee items, and student fees
+        const [allCompleted, feeItems, studentFees] = await Promise.all([
+            Transaction.find({
+                studentId,
+                status: { $in: ['completed', 'refunded'] },
+                webhookVerified: true
+            }).sort({ createdAt: 1 }),
+
+            FeeItem.find({
+                studentId,
+                status: { $in: ['pending', 'partial'] },
+            }).populate('feeTypeId'),
+
+            StudentFee.find({
+                student: studentId,
+                status: { $in: ['unpaid', 'partial'] },
+                dueDate: { $exists: true, $ne: null }
+            }).populate('academicYear').sort({ semester: 1 })
+        ]);
+
+        // Filter in memory for recent transactions (last 6 months)
+        const completedTransactions = allCompleted.filter(t => new Date(t.createdAt) >= sixMonthsAgo);
 
         const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
         const monthlyTrend: { label: string; amount: number }[] = [];
-        const now = new Date();
 
         for (let i = 0; i < 6; i++) {
             const d = new Date();
@@ -937,17 +954,19 @@ export const getStudentPaymentInsights = async (req: Request, res: Response, nex
                     const td = new Date(t.createdAt);
                     return td.getMonth() === mIdx && td.getFullYear() === yr;
                 })
-                .reduce((sum, t) => sum + t.amount, 0);
-            monthlyTrend.push({ label: monthNames[mIdx], amount: total });
+                .reduce((sum, t) => {
+                    const factor = t.status === 'refunded' ? -1 : 1;
+                    return sum + (t.amount * factor);
+                }, 0);
+            monthlyTrend.push({ label: monthNames[mIdx], amount: Math.max(0, total) });
         }
-
-        const allCompleted = await Transaction.find({ studentId, status: 'completed', webhookVerified: true });
 
         const methodCounts: Record<string, { count: number; total: number }> = {};
         allCompleted.forEach(t => {
             if (!methodCounts[t.paymentMethod]) methodCounts[t.paymentMethod] = { count: 0, total: 0 };
-            methodCounts[t.paymentMethod].count++;
-            methodCounts[t.paymentMethod].total += t.amount;
+            const factor = t.status === 'refunded' ? -1 : 1;
+            methodCounts[t.paymentMethod].count = Math.max(0, methodCounts[t.paymentMethod].count + (factor > 0 ? 1 : 0)); // Don't decrement count below 0, reversals don't decrement count of payments
+            methodCounts[t.paymentMethod].total = Math.max(0, methodCounts[t.paymentMethod].total + (t.amount * factor));
         });
         const methodBreakdown = Object.entries(methodCounts).map(([method, data]) => ({
             method, count: data.count, total: data.total,
@@ -956,14 +975,11 @@ export const getStudentPaymentInsights = async (req: Request, res: Response, nex
         // Category breakdown
         const categoryTotals: Record<string, number> = {};
         allCompleted.forEach(t => {
-            categoryTotals[t.category] = (categoryTotals[t.category] || 0) + t.amount;
+            const factor = t.status === 'refunded' ? -1 : 1;
+            categoryTotals[t.category] = Math.max(0, (categoryTotals[t.category] || 0) + (t.amount * factor));
         });
 
         // Upcoming fee deadlines
-        const feeItems = await FeeItem.find({
-            studentId, status: { $in: ['pending', 'partial'] },
-        }).populate('feeTypeId');
-
         const feeItemDeadlines = feeItems
             .filter(f => f.dueDate)
             .map(f => {
@@ -972,10 +988,6 @@ export const getStudentPaymentInsights = async (req: Request, res: Response, nex
                 const daysLeft = Math.ceil((dueDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
                 return { name: feeType?.name || 'Fee', category: feeType?.category || 'other', balance: f.balance, dueDate: f.dueDate, daysLeft };
             });
-
-        const studentFees = await StudentFee.find({
-            student: studentId, status: { $in: ['unpaid', 'partial'] }, dueDate: { $exists: true, $ne: null },
-        }).populate('academicYear').sort({ semester: 1 });
 
         // Only show the CURRENT semester's deadline:
         // → first unpaid/partial semester (Sem 1 until paid, then Sem 2)
@@ -994,14 +1006,20 @@ export const getStudentPaymentInsights = async (req: Request, res: Response, nex
             .sort((a, b) => a.daysLeft - b.daysLeft)
             .slice(0, 5);
 
-        const totalPaidAll = allCompleted.reduce((sum, t) => sum + t.amount, 0);
-        const totalTransactions = allCompleted.length;
+        const totalPaidAll = allCompleted.reduce((sum, t) => {
+            const factor = t.status === 'refunded' ? -1 : 1;
+            return sum + (t.amount * factor);
+        }, 0);
+        const totalTransactions = allCompleted.filter(t => t.status === 'completed').length;
         const currentMonthPaid = completedTransactions
             .filter(t => {
                 const td = new Date(t.createdAt);
                 return td.getMonth() === now.getMonth() && td.getFullYear() === now.getFullYear();
             })
-            .reduce((sum, t) => sum + t.amount, 0);
+            .reduce((sum, t) => {
+                const factor = t.status === 'refunded' ? -1 : 1;
+                return sum + (t.amount * factor);
+            }, 0);
 
         let streak = 0;
         for (let i = monthlyTrend.length - 1; i >= 0; i--) {
@@ -1149,10 +1167,37 @@ export const getAllTransactions = async (req: Request, res: Response, next: Next
         const skip = (page - 1) * limit;
 
         const filter: Record<string, any> = {};
-        if (req.query.status) filter.status = req.query.status;
-        if (req.query.category) filter.category = req.query.category;
-        if (req.query.paymentMethod) filter.paymentMethod = req.query.paymentMethod;
-        if (req.query.paymentChannel) filter.paymentChannel = req.query.paymentChannel;
+        
+        // Status mapping for different verify lists
+        if (req.query.status && req.query.status !== 'all') {
+            const statusStr = req.query.status as string;
+            if (statusStr === 'pending_verification') {
+                filter.status = { $in: ['pending', 'processing'] };
+            } else if (statusStr === 'manually_verified') {
+                filter.$or = [
+                    { status: 'completed', 'metadata.manuallyVerified': true },
+                    { paymentChannel: 'manual' }
+                ];
+            } else if (statusStr === 'completed') {
+                filter.status = 'completed';
+                filter.paymentChannel = { $ne: 'manual' };
+                filter['metadata.manuallyVerified'] = { $ne: true };
+            } else {
+                filter.status = statusStr;
+            }
+        }
+        
+        // Programme filtering
+        if (req.query.programme && req.query.programme !== 'all') {
+            const matchedStudents = await User.find({
+                programme: { $regex: req.query.programme as string, $options: 'i' }
+            }).select('_id').lean();
+            filter.studentId = { $in: matchedStudents.map(s => s._id) };
+        }
+
+        if (req.query.category && req.query.category !== 'all') filter.category = req.query.category;
+        if (req.query.paymentMethod && req.query.paymentMethod !== 'all') filter.paymentMethod = req.query.paymentMethod;
+        if (req.query.paymentChannel && req.query.paymentChannel !== 'all') filter.paymentChannel = req.query.paymentChannel;
         if (req.query.webhookVerified) filter.webhookVerified = req.query.webhookVerified === 'true';
 
         // Date range
@@ -1458,37 +1503,101 @@ export const handlePaymentCancelCallback = async (req: Request, res: Response): 
         }
 
         if (['pending', 'processing'].includes(transaction.status)) {
-            transaction.status = 'cancelled';
-            transaction.metadata = {
-                ...transaction.metadata,
-                cancelledAt: new Date().toISOString(),
-                cancelledBy: 'student_redirect',
-            };
-            await transaction.save();
+            // ── CRITICAL: Verify with Paystack BEFORE marking as cancelled ──
+            // MoMo payments can complete milliseconds before the cancel redirect fires.
+            // A student who entered their PIN and had money deducted must NOT be marked cancelled.
+            let paystackStatus: string | null = null;
+            try {
+                const psVerify = await PaystackService.verifyTransaction(refStr);
+                paystackStatus = psVerify.data?.status || null;
 
-            // Emit socket updates to student & admin
+                if (psVerify.status && psVerify.data?.status === 'success') {
+                    // Payment was actually COMPLETED on Paystack — finalize it!
+                    const amountGHSPaid = psVerify.data.amount / 100;
+                    if (Math.abs(amountGHSPaid - transaction.amountExpected) <= 0.01) {
+                        const channel = psVerify.data.channel || 'paystack';
+                        const gatewayResponse = psVerify.data.gateway_response || 'Approved';
+                        const paidAt = psVerify.data.paid_at ? new Date(psVerify.data.paid_at) : new Date();
+                        const providerRef = psVerify.data.id?.toString() || 'N/A';
+                        await finalizePaymentSuccess(transaction, paidAt, providerRef, amountGHSPaid, channel, gatewayResponse);
+                        console.log(`[CancelCallback] Intercepted: ${refStr} was actually PAID. Finalized instead of cancelling.`);
+                        // Show the success page instead of the cancel page
+                        res.send(`
+                            <!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1.0">
+                            <title>Payment Confirmed</title>
+                            <style>body{font-family:-apple-system,sans-serif;background:#F0FDF4;display:flex;justify-content:center;align-items:center;height:100vh;margin:0}
+                            .card{background:white;padding:30px;border-radius:16px;box-shadow:0 4px 20px rgba(0,0,0,.08);text-align:center;max-width:320px;width:100%}
+                            .icon{width:72px;height:72px;background:#10B981;color:white;border-radius:50%;display:flex;align-items:center;justify-content:center;margin:0 auto 20px;font-size:36px}
+                            h2{color:#065F46;margin:0 0 10px;font-weight:700}p{color:#64748B;font-size:14px;margin:0 0 20px;line-height:1.5}
+                            .ref{font-size:11px;color:#94A3B8;background:#F1F5F9;padding:6px 12px;border-radius:8px;display:inline-block}</style></head>
+                            <body><div class="card"><div class="icon">✓</div>
+                            <h2>Payment Confirmed!</h2>
+                            <p>Your payment was successfully processed. Return to the app to view your updated balance.</p>
+                            <span class="ref">Ref: ${refStr}</span></div></body></html>
+                        `);
+                        return;
+                    }
+                }
+
+                // Paystack confirmed abandoned/failed — safe to cancel
+                if (paystackStatus === 'abandoned' || paystackStatus === 'failed') {
+                    transaction.status = 'cancelled';
+                    transaction.metadata = {
+                        ...transaction.metadata,
+                        cancelledAt: new Date().toISOString(),
+                        cancelledBy: 'student_redirect',
+                        paystackStatus,
+                    };
+                    await transaction.save();
+                } else {
+                    // Paystack returned pending or unknown — leave as pending (safer)
+                    transaction.status = 'pending';
+                    transaction.metadata = {
+                        ...transaction.metadata,
+                        cancelRedirectAt: new Date().toISOString(),
+                        paystackStatus: paystackStatus || 'unknown',
+                    };
+                    await transaction.save();
+                }
+            } catch (psError: any) {
+                // Cannot reach Paystack — leave as pending rather than wrongly cancelling
+                console.error('[handlePaymentCancelCallback] Paystack verify failed:', psError.message);
+                transaction.status = 'pending';
+                transaction.metadata = {
+                    ...transaction.metadata,
+                    cancelRedirectAt: new Date().toISOString(),
+                    cancelVerifyError: psError.message,
+                };
+                await transaction.save();
+            }
+
+            const finalStatus = transaction.status;
+
+            // Emit socket update
             emitFeeUpdate({
                 type: 'student_fee',
                 action: 'updated',
                 studentId: transaction.studentId.toString(),
-                data: { reference: refStr, status: 'cancelled' }
+                data: { reference: refStr, status: finalStatus }
             });
 
-            try {
-                const studentUser = await User.findById(transaction.studentId).select('firstName lastName');
-                if (studentUser) {
-                    emitPaymentCancelled({
-                        transactionId: transaction._id.toString(),
-                        studentId: transaction.studentId.toString(),
-                        studentName: `${studentUser.firstName} ${studentUser.lastName}`,
-                        amount: transaction.amount,
-                        description: transaction.description,
-                        reference: transaction.reference,
-                        category: transaction.category,
-                    });
+            if (finalStatus === 'cancelled') {
+                try {
+                    const studentUser = await User.findById(transaction.studentId).select('firstName lastName');
+                    if (studentUser) {
+                        emitPaymentCancelled({
+                            transactionId: transaction._id.toString(),
+                            studentId: transaction.studentId.toString(),
+                            studentName: `${studentUser.firstName} ${studentUser.lastName}`,
+                            amount: transaction.amount,
+                            description: transaction.description,
+                            reference: transaction.reference,
+                            category: transaction.category,
+                        });
+                    }
+                } catch (err) {
+                    console.error('[handlePaymentCancelCallback] Socket emit failed:', err);
                 }
-            } catch (err) {
-                console.error('[handlePaymentCancelCallback] Socket emit failed:', err);
             }
         }
 
@@ -1566,3 +1675,632 @@ export const handlePaymentCancelCallback = async (req: Request, res: Response): 
         res.status(500).send('<h3>An error occurred processing the cancellation</h3>');
     }
 };
+
+// ─── GET PAYMENT STATUS (for frontend polling) ────────────────────────────────
+
+/**
+ * GET /api/payments/status/:reference
+ *
+ * Lightweight status endpoint polled by the mobile app while waiting for
+ * Paystack/webhook confirmation. Returns only the status fields needed
+ * to decide what step to show.
+ */
+export const getPaymentStatus = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+        const { reference } = req.params;
+        const transaction = await Transaction.findOne({ reference });
+        if (!transaction) {
+            res.status(404).json({ message: 'Transaction not found.' });
+            return;
+        }
+        // Only the owning student or admin may poll
+        if (req.user!.role !== 'admin' && transaction.studentId.toString() !== req.user!.id.toString()) {
+            res.status(403).json({ message: 'Unauthorized.' });
+            return;
+        }
+        res.json({
+            id: transaction._id,
+            _id: transaction._id,
+            reference: transaction.reference,
+            status: transaction.status,
+            webhookVerified: transaction.webhookVerified,
+            amount: transaction.amount,
+            paidAt: transaction.paidAt || null,
+            category: transaction.category,
+            description: transaction.description,
+        });
+    } catch (error) {
+        next(error);
+    }
+};
+
+// ─── ADMIN: VERIFY & CONFIRM PAYMENT ─────────────────────────────────────────
+
+/**
+ * POST /api/payments/admin/verify
+ * Admin: Search for a transaction by reference / receipt / student, then verify
+ * with Paystack and finalize if successful.
+ */
+export const adminVerifyAndConfirm = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+        const admin = req.user!;
+        const { reference, receiptNumber, studentQuery } = req.body;
+
+        let transaction: any = null;
+
+        if (reference) {
+            transaction = await Transaction.findOne({ reference });
+        } else if (receiptNumber) {
+            transaction = await Transaction.findOne({ 'metadata.receiptNumber': receiptNumber });
+        } else if (studentQuery) {
+            const matchedStudent = await User.findOne({
+                $or: [
+                    { studentId: { $regex: studentQuery, $options: 'i' } },
+                    { firstName: { $regex: studentQuery, $options: 'i' } },
+                    { email: { $regex: studentQuery, $options: 'i' } },
+                ]
+            });
+            if (matchedStudent) {
+                transaction = await Transaction.findOne({
+                    studentId: matchedStudent._id,
+                    status: { $in: ['pending', 'processing', 'cancelled'] }
+                }).sort({ createdAt: -1 });
+            }
+        }
+
+        if (!transaction) {
+            res.status(404).json({ message: 'Transaction not found. Try searching by reference, receipt number, or student ID.' });
+            return;
+        }
+
+        // Already completed — just return it
+        if (transaction.status === 'completed' && transaction.webhookVerified) {
+            res.json({ message: 'Transaction is already verified and completed.', transaction: transaction.toJSON() });
+            return;
+        }
+
+        // Verify with Paystack
+        let psVerify: any;
+        try {
+            psVerify = await PaystackService.verifyTransaction(transaction.reference);
+        } catch (psErr: any) {
+            res.status(502).json({ message: `Could not reach Paystack: ${psErr.message}` });
+            return;
+        }
+
+        if (!psVerify.status || psVerify.data?.status !== 'success') {
+            await AuditLog.create({
+                action: 'admin_verify_not_success',
+                reference: transaction.reference,
+                details: {
+                    adminName: `${admin.firstName} ${admin.lastName}`,
+                    paystackStatus: psVerify.data?.status || 'unknown',
+                },
+                isError: false,
+            }).catch(console.error);
+            res.status(400).json({
+                message: `Paystack reports this payment as "${psVerify.data?.status || 'not found'}". Cannot confirm.`,
+                paystackStatus: psVerify.data?.status,
+                transaction: transaction.toJSON(),
+            });
+            return;
+        }
+
+        // Finalize
+        const amountGHSPaid = psVerify.data.amount / 100;
+        const channel = psVerify.data.channel || 'paystack';
+        const gatewayResponse = psVerify.data.gateway_response || 'Admin Verified';
+        const paidAt = psVerify.data.paid_at ? new Date(psVerify.data.paid_at) : new Date();
+        const providerRef = psVerify.data.id?.toString() || 'N/A';
+
+        await finalizePaymentSuccess(transaction, paidAt, providerRef, amountGHSPaid, channel, gatewayResponse);
+
+        await AuditLog.create({
+            action: 'admin_payment_confirmed',
+            reference: transaction.reference,
+            studentId: transaction.studentId,
+            amount: amountGHSPaid,
+            details: {
+                adminName: `${admin.firstName} ${admin.lastName}`,
+                paystackId: providerRef,
+                gatewayResponse,
+            },
+            isError: false,
+        }).catch(console.error);
+
+        const updated = await Transaction.findOne({ reference: transaction.reference });
+        res.json({ message: 'Payment verified and confirmed successfully.', transaction: updated?.toJSON() });
+    } catch (error) {
+        next(error);
+    }
+};
+
+// ─── ADMIN: ADJUST BALANCE ────────────────────────────────────────────────────
+
+/**
+ * POST /api/payments/admin/adjust-balance
+ * Admin: Manually credit or debit a student's fee balance.
+ * adjustment > 0 = credit (scholarship, overpayment return)
+ * adjustment < 0 = deduction
+ */
+export const adminAdjustBalance = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+        const admin = req.user!;
+        const { studentFeeId, feeItemId, adjustment, reason, notes } = req.body;
+
+        if (!reason || reason.trim().length < 5) {
+            res.status(400).json({ message: 'A reason of at least 5 characters is required.' });
+            return;
+        }
+        if (typeof adjustment !== 'number' || adjustment === 0) {
+            res.status(400).json({ message: 'adjustment must be a non-zero number (GHS).' });
+            return;
+        }
+
+        let adjustedRecord: any = null;
+        let studentId: any = null;
+        let description = '';
+        let previousBalance = 0;
+        let newBalance = 0;
+        let category: FeeCategory = 'academic';
+
+        if (studentFeeId) {
+            const sf = await StudentFee.findById(studentFeeId);
+            if (!sf) { res.status(404).json({ message: 'StudentFee not found.' }); return; }
+            studentId = sf.student;
+            previousBalance = sf.balance;
+
+            // adjustment > 0 means we credit (increase amountPaid, decrease balance)
+            sf.amountPaid = Math.max(0, sf.amountPaid + adjustment);
+            sf.balance = Math.max(0, sf.totalFee - sf.amountPaid);
+            sf.status = sf.balance === 0 ? 'paid' : sf.amountPaid > 0 ? 'partial' : 'unpaid';
+            await sf.save();
+            adjustedRecord = sf;
+            newBalance = sf.balance;
+            description = 'Academic fee balance adjustment';
+            category = 'academic';
+        } else if (feeItemId) {
+            const fi = await FeeItem.findById(feeItemId);
+            if (!fi) { res.status(404).json({ message: 'FeeItem not found.' }); return; }
+            studentId = fi.studentId;
+            previousBalance = fi.balance;
+
+            fi.amountPaid = Math.max(0, fi.amountPaid + adjustment);
+            fi.balance = Math.max(0, fi.totalAmount - fi.amountPaid);
+            fi.status = fi.balance === 0 ? 'paid' : fi.amountPaid > 0 ? 'partial' : 'pending';
+            await fi.save();
+            adjustedRecord = fi;
+            newBalance = fi.balance;
+            description = 'Fee item balance adjustment';
+
+            const ft = await FeeType.findById(fi.feeTypeId);
+            category = resolveFeeCategory(ft, false);
+            description = ft?.name ? `${ft.name} balance adjustment` : description;
+        } else {
+            res.status(400).json({ message: 'Either studentFeeId or feeItemId is required.' });
+            return;
+        }
+
+        // Create transaction log so adjustment is reflected in student history, charts, and dashboard activity
+        const txReference = generateReference('ADJ');
+        await Transaction.create({
+            studentId,
+            feeItemId: feeItemId || undefined,
+            studentFeeId: studentFeeId || undefined,
+            amount: Math.abs(adjustment),
+            amountExpected: Math.abs(adjustment),
+            paymentMethod: 'bank_transfer',
+            paymentChannel: 'manual',
+            status: adjustment > 0 ? 'completed' : 'refunded',
+            reference: txReference,
+            category,
+            description: `${description}: ${reason} (${adjustment > 0 ? 'Credit' : 'Debit'})`,
+            webhookVerified: true,
+            paidAt: new Date(),
+            metadata: {
+                recordedBy: admin.id,
+                adminName: `${admin.firstName} ${admin.lastName}`,
+                adjustmentType: adjustment > 0 ? 'credit' : 'debit',
+                previousBalance,
+                newBalance,
+                reason,
+                notes: notes || '',
+            }
+        }).catch(console.error);
+
+        await AuditLog.create({
+            action: 'manual_balance_adjustment',
+            studentId,
+            amount: adjustment,
+            details: {
+                adminId: admin.id,
+                adminName: `${admin.firstName} ${admin.lastName}`,
+                description,
+                reason,
+                notes: notes || '',
+                adjustmentType: adjustment > 0 ? 'credit' : 'debit',
+                previousBalance,
+                newBalance,
+                timestamp: new Date().toISOString()
+            },
+            isError: false,
+        }).catch(console.error);
+
+        emitFeeUpdate({
+            type: 'student_fee',
+            action: 'updated',
+            studentId: studentId.toString(),
+            data: { adjustedBy: 'admin', reason }
+        });
+
+        res.json({
+            message: `Balance adjusted by ${adjustment > 0 ? '+' : ''}${adjustment} GHS successfully.`,
+            record: adjustedRecord,
+        });
+    } catch (error) {
+        next(error);
+    }
+};
+
+// ─── ADMIN: RECORD MANUAL PAYMENT ────────────────────────────────────────────
+
+/**
+ * POST /api/payments/admin/record-payment
+ * Admin: Record a manual/offline payment (e.g. cash, bank deposit receipt).
+ * Creates a completed Transaction + Payment + updates the ledger.
+ */
+export const adminRecordPayment = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+        const admin = req.user!;
+        const { studentId, studentFeeId, feeItemId, amount, paymentMethod, reference: customRef, receiptNumber, notes } = req.body;
+
+        if (!studentId || !amount || !paymentMethod) {
+            res.status(400).json({ message: 'studentId, amount, and paymentMethod are required.' });
+            return;
+        }
+
+        const student = await User.findById(studentId);
+        if (!student) { res.status(404).json({ message: 'Student not found.' }); return; }
+
+        const reference = customRef || generateReference('MAN');
+
+        // Duplicate reference guard
+        const existing = await Transaction.findOne({ reference });
+        if (existing) {
+            res.status(409).json({ message: `A transaction with reference "${reference}" already exists.` });
+            return;
+        }
+
+        let feeItem: any = null;
+        let academicFee: any = null;
+        let category: FeeCategory = 'academic';
+        let description = notes || 'Manual Payment by Admin';
+
+        if (feeItemId) {
+            feeItem = await FeeItem.findById(feeItemId);
+            if (feeItem) {
+                const ft = await FeeType.findById(feeItem.feeTypeId);
+                category = resolveFeeCategory(ft, false);
+                description = ft?.name ? `${ft.name} — ${notes || 'Manual Payment'}` : description;
+            }
+        } else if (studentFeeId) {
+            academicFee = await StudentFee.findById(studentFeeId);
+            category = 'academic';
+            description = `Academic Fee — ${notes || 'Manual Payment'}`;
+        }
+
+        const amountNum = parseFloat(amount);
+
+        const transaction = await Transaction.create({
+            studentId,
+            feeItemId: feeItem?._id,
+            studentFeeId: academicFee?._id,
+            amount: amountNum,
+            amountExpected: amountNum,
+            paymentMethod,
+            paymentChannel: 'manual',
+            status: 'completed',
+            reference,
+            category,
+            description,
+            webhookVerified: true,
+            paidAt: new Date(),
+            metadata: {
+                recordedBy: admin.id,
+                adminName: `${admin.firstName} ${admin.lastName}`,
+                receiptNumber: receiptNumber || null,
+                notes: notes || '',
+                manualEntry: true,
+            },
+        });
+
+        await Payment.findOneAndUpdate(
+            { transactionReference: reference },
+            {
+                student: studentId,
+                amount: amountNum,
+                paymentMethod,
+                transactionReference: reference,
+                status: 'completed',
+                paymentDate: new Date(),
+                description,
+                studentFee: academicFee?._id,
+                feeItem: feeItem?._id,
+                metadata: { manualEntry: true, receiptNumber: receiptNumber || null },
+            },
+            { upsert: true, new: true }
+        );
+
+        await updateLedger(feeItem, academicFee, amountNum, category);
+
+        await AuditLog.create({
+            action: 'admin_manual_payment',
+            reference,
+            studentId,
+            amount: amountNum,
+            category,
+            details: {
+                adminName: `${admin.firstName} ${admin.lastName}`,
+                paymentMethod,
+                receiptNumber: receiptNumber || null,
+                notes: notes || '',
+            },
+            isError: false,
+        }).catch(console.error);
+
+        emitFeeUpdate({
+            type: 'student_fee',
+            action: 'updated',
+            studentId: studentId.toString(),
+            data: { reference, amount: amountNum, status: 'completed', recordedBy: 'admin' }
+        });
+
+        res.status(201).json({
+            message: 'Manual payment recorded successfully.',
+            transaction: transaction.toJSON(),
+            reference,
+        });
+    } catch (error) {
+        next(error);
+    }
+};
+
+/**
+ * Get outstanding balance for a fee record.
+ */
+async function getOutstandingBalance(studentId: string, studentFeeId?: any, feeItemId?: any): Promise<number> {
+    try {
+        if (feeItemId) {
+            const fi = await FeeItem.findById(feeItemId);
+            return fi ? fi.balance : 0;
+        } else if (studentFeeId) {
+            const sf = await StudentFee.findById(studentFeeId);
+            return sf ? sf.balance : 0;
+        }
+        return 0;
+    } catch {
+        return 0;
+    }
+}
+
+/**
+ * POST /api/payments/admin/manual-approve
+ * Admin manually verifies and approves a payment when webhook has failed or delayed.
+ * Marks the payment as Completed with 'manuallyVerified' metadata.
+ */
+export const adminManualApprove = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+        const admin = req.user!;
+        const { studentId, studentFeeId, feeItemId, amount, reference, receiptNumber, notes } = req.body;
+
+        if (!studentId || !amount || !reference || !notes) {
+            res.status(400).json({ message: 'studentId, amount, reference, and notes are required.' });
+            return;
+        }
+
+        const student = await User.findById(studentId);
+        if (!student) {
+            res.status(404).json({ message: 'Student not found.' });
+            return;
+        }
+
+        const amountNum = parseFloat(amount);
+        if (isNaN(amountNum) || amountNum <= 0) {
+            res.status(400).json({ message: 'Please provide a valid amount.' });
+            return;
+        }
+
+        // Duplicate payment protection
+        const existingTx = await Transaction.findOne({ reference });
+        if (existingTx) {
+            if (existingTx.status === 'completed') {
+                res.status(409).json({
+                    message: `Warning: This Paystack reference (${reference}) has already been successfully processed and credited.`,
+                    transaction: existingTx.toJSON()
+                });
+                return;
+            }
+
+            // Existing pending/processing/cancelled/failed transaction -> update it
+            const previousBalance = await getOutstandingBalance(studentId, existingTx.studentFeeId, existingTx.feeItemId);
+            
+            existingTx.status = 'completed';
+            existingTx.webhookVerified = true;
+            existingTx.paidAt = new Date();
+            existingTx.amount = amountNum;
+            existingTx.metadata = {
+                ...existingTx.metadata,
+                manuallyVerified: true,
+                verifiedBy: admin.id,
+                adminName: `${admin.firstName} ${admin.lastName}`,
+                receiptNumber: receiptNumber || null,
+                notes: notes || '',
+                approvedAt: new Date().toISOString()
+            };
+            await existingTx.save();
+
+            // Create payment
+            await Payment.findOneAndUpdate(
+                { transactionReference: reference },
+                {
+                    student: studentId,
+                    amount: amountNum,
+                    paymentMethod: existingTx.paymentMethod || 'mobile_money',
+                    transactionReference: reference,
+                    status: 'completed',
+                    paymentDate: new Date(),
+                    description: existingTx.description,
+                    studentFee: existingTx.studentFeeId,
+                    feeItem: existingTx.feeItemId,
+                    metadata: { manuallyVerified: true, receiptNumber: receiptNumber || null },
+                },
+                { upsert: true, new: true }
+            );
+
+            // Update ledger
+            let feeItem: any = null;
+            let academicFee: any = null;
+            if (existingTx.feeItemId) feeItem = await FeeItem.findById(existingTx.feeItemId);
+            if (existingTx.studentFeeId) academicFee = await StudentFee.findById(existingTx.studentFeeId);
+            await updateLedger(feeItem, academicFee, amountNum, existingTx.category);
+
+            const newBalance = await getOutstandingBalance(studentId, existingTx.studentFeeId, existingTx.feeItemId);
+
+            // Create Audit Log
+            await AuditLog.create({
+                action: 'payment_success', // Use existing success action or custom
+                reference,
+                studentId,
+                amount: amountNum,
+                category: existingTx.category,
+                isError: false,
+                details: {
+                    adminId: admin.id,
+                    adminName: `${admin.firstName} ${admin.lastName}`,
+                    previousBalance,
+                    newBalance,
+                    notes,
+                    receiptNumber,
+                    paystackReference: reference,
+                    manuallyVerified: true,
+                    timestamp: new Date().toISOString()
+                }
+            });
+
+            emitFeeUpdate({
+                type: 'student_fee',
+                action: 'updated',
+                studentId: studentId.toString(),
+                data: { reference, amount: amountNum, status: 'completed', verifiedBy: 'admin' }
+            });
+
+            res.json({
+                message: 'Payment manually verified and approved successfully.',
+                transaction: existingTx.toJSON()
+            });
+            return;
+        }
+
+        // If transaction does NOT exist in DB, create a new completed one
+        let feeItem: any = null;
+        let academicFee: any = null;
+        let category: FeeCategory = 'academic';
+        let description = notes || 'Manually Verified Paystack Payment';
+
+        if (feeItemId) {
+            feeItem = await FeeItem.findById(feeItemId);
+            if (feeItem) {
+                const ft = await FeeType.findById(feeItem.feeTypeId);
+                category = resolveFeeCategory(ft, false);
+                description = ft?.name ? `${ft.name} — Manually Verified` : description;
+            }
+        } else if (studentFeeId) {
+            academicFee = await StudentFee.findById(studentFeeId);
+            category = 'academic';
+            description = `Academic Fee — Manually Verified`;
+        }
+
+        const previousBalance = await getOutstandingBalance(studentId, studentFeeId, feeItemId);
+
+        const transaction = await Transaction.create({
+            studentId,
+            feeItemId: feeItem?._id,
+            studentFeeId: academicFee?._id,
+            amount: amountNum,
+            amountExpected: amountNum,
+            paymentMethod: 'mobile_money',
+            paymentChannel: 'paystack',
+            status: 'completed',
+            reference,
+            category,
+            description,
+            webhookVerified: true,
+            paidAt: new Date(),
+            metadata: {
+                manuallyVerified: true,
+                verifiedBy: admin.id,
+                adminName: `${admin.firstName} ${admin.lastName}`,
+                receiptNumber: receiptNumber || null,
+                notes: notes || '',
+                approvedAt: new Date().toISOString()
+            },
+        });
+
+        await Payment.findOneAndUpdate(
+            { transactionReference: reference },
+            {
+                student: studentId,
+                amount: amountNum,
+                paymentMethod: 'mobile_money',
+                transactionReference: reference,
+                status: 'completed',
+                paymentDate: new Date(),
+                description,
+                studentFee: academicFee?._id,
+                feeItem: feeItem?._id,
+                metadata: { manuallyVerified: true, receiptNumber: receiptNumber || null },
+            },
+            { upsert: true, new: true }
+        );
+
+        await updateLedger(feeItem, academicFee, amountNum, category);
+        const newBalance = await getOutstandingBalance(studentId, studentFeeId, feeItemId);
+
+        await AuditLog.create({
+            action: 'payment_success',
+            reference,
+            studentId,
+            amount: amountNum,
+            category,
+            isError: false,
+            details: {
+                adminId: admin.id,
+                adminName: `${admin.firstName} ${admin.lastName}`,
+                previousBalance,
+                newBalance,
+                notes,
+                receiptNumber,
+                paystackReference: reference,
+                manuallyVerified: true,
+                timestamp: new Date().toISOString()
+            }
+        });
+
+        emitFeeUpdate({
+            type: 'student_fee',
+            action: 'updated',
+            studentId: studentId.toString(),
+            data: { reference, amount: amountNum, status: 'completed', verifiedBy: 'admin' }
+        });
+
+        res.status(201).json({
+            message: 'Manual payment verification recorded successfully.',
+            transaction: transaction.toJSON(),
+            reference
+        });
+    } catch (error) {
+        next(error);
+    }
+};
+
+

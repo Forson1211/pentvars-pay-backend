@@ -49,14 +49,16 @@ export const getStudentDashboard = async (req: Request, res: Response, next: Nex
         }
 
         // Get or create student fee (server-side calculation)
-        let studentFee;
-        try {
-            studentFee = await FeeCalculationService.getOrCreateStudentFee(user, semester);
-        } catch (calcError: any) {
-            res.status(404).json({
-                message: calcError.message || 'Unable to calculate fees. Contact administration.',
-            });
-            return;
+        let studentFee = (semester === 1) ? studentFeeSem1 : null;
+        if (!studentFee) {
+            try {
+                studentFee = await FeeCalculationService.getOrCreateStudentFee(user, semester);
+            } catch (calcError: any) {
+                res.status(404).json({
+                    message: calcError.message || 'Unable to calculate fees. Contact administration.',
+                });
+                return;
+            }
         }
 
         if (!studentFee) {
@@ -102,25 +104,26 @@ export const getStudentDashboard = async (req: Request, res: Response, next: Nex
             status: studentFee.status
         };
 
-        // Get payment history for this fee record
-        const payments = await Payment.find({
-            $or: [
-                { studentFee: studentFee._id },
-                { feeItem: { $in: feeItems.map(i => i._id) } }
-            ],
-            status: 'completed',
-        }).sort({ paymentDate: -1 });
+        // Parallelize fetching payment history, annual fees, and yearly fee items
+        const [payments, academicFees, yearFeeItems] = await Promise.all([
+            Payment.find({
+                $or: [
+                    { studentFee: studentFee._id },
+                    { feeItem: { $in: feeItems.map(i => i._id) } }
+                ],
+                status: 'completed',
+            }).sort({ paymentDate: -1 }),
 
-        // Get annual categorical summaries
-        const academicFees = await StudentFee.find({
-            student: user._id,
-            academicYear: activeYear._id,
-        }).populate('academicYear').populate({ path: 'feeTemplate', populate: { path: 'programme' } });
+            StudentFee.find({
+                student: user._id,
+                academicYear: activeYear._id,
+            }).populate('academicYear').populate({ path: 'feeTemplate', populate: { path: 'programme' } }),
 
-        const yearFeeItems = await FeeItem.find({
-            studentId: user._id,
-            academicYear: activeYear.yearLabel
-        }).populate('feeTypeId');
+            FeeItem.find({
+                studentId: user._id,
+                academicYear: activeYear.yearLabel
+            }).populate('feeTypeId')
+        ]);
 
         const yearHostel = yearFeeItems.filter(i => (i.feeTypeId as any)?.category === 'hostel');
         const yearExam = yearFeeItems.filter(i => examCategories.includes((i.feeTypeId as any)?.category));

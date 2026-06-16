@@ -8,6 +8,7 @@ import { FeeCalculationService } from '../services/feeCalculationService';
 import { emitFeeUpdate } from '../services/socketService';
 import { FeeType } from '../models/FeeType';
 import { generateToken, generateRefreshToken } from '../utils/helpers';
+import { AuditLog } from '../models/AuditLog';
 
 /**
  * GET /api/admin/students
@@ -95,12 +96,25 @@ export const getAdminHierarchy = async (req: Request, res: Response, next: NextF
     }
 };
 
+const isSuperAdminUser = (user: any): boolean => {
+    if (!user || user.role !== 'admin') return false;
+    const superuserPositions = ['Super Admin', 'System Administrator', 'Rector'];
+    return (
+        superuserPositions.includes(user.position || '') ||
+        (user.permissions && user.permissions.includes('all'))
+    );
+};
+
 /**
  * POST /api/admin/create-staff
  * Admin: Create a new administrative staff member
  */
 export const createStaff = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
+        if (!isSuperAdminUser(req.user)) {
+            res.status(403).json({ message: 'Only a Super Admin can create admin accounts.' });
+            return;
+        }
         const { email, password, firstName, lastName, position, phone, permissions } = req.body;
 
         const existingUser = await User.findOne({ email: email.toLowerCase() });
@@ -126,8 +140,20 @@ export const createStaff = async (req: Request, res: Response, next: NextFunctio
             status: 'active'
         });
 
-        // Remove password from response (already handled by select:false, but to be safe)
         const staffObj = staff.toJSON();
+
+        AuditLog.create({
+            action: 'staff_created',
+            details: {
+                adminId: req.user?.id,
+                adminName: `${req.user?.firstName} ${req.user?.lastName}`,
+                newStaffId: staff.id,
+                newStaffName: `${firstName} ${lastName}`,
+                position: position || 'Administrator',
+                email: email.toLowerCase(),
+            },
+            isError: false,
+        }).catch(console.error);
 
         res.status(201).json(staffObj);
     } catch (error) {
@@ -175,6 +201,10 @@ export const impersonateUser = async (req: Request, res: Response, next: NextFun
  */
 export const updateStaff = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
+        if (!isSuperAdminUser(req.user)) {
+            res.status(403).json({ message: 'Only a Super Admin can change admin roles.' });
+            return;
+        }
         const { id } = req.params;
         const { position, status, firstName, lastName, phone, permissions } = req.body;
 
@@ -196,6 +226,25 @@ export const updateStaff = async (req: Request, res: Response, next: NextFunctio
             return;
         }
 
+        // Audit: log role/status change
+        const changeDetails: Record<string, any> = {
+            adminId: req.user?.id,
+            adminName: `${req.user?.firstName} ${req.user?.lastName}`,
+            targetStaffId: id,
+            targetStaffName: `${updatedUser.firstName} ${updatedUser.lastName}`,
+        };
+        if (position) changeDetails.newPosition = position;
+        if (status) changeDetails.newStatus = status;
+        if (permissions) changeDetails.newPermissions = permissions;
+
+        if (position || status || permissions) {
+            AuditLog.create({
+                action: position ? 'staff_role_changed' : 'staff_status_changed',
+                details: changeDetails,
+                isError: false,
+            }).catch(console.error);
+        }
+
         res.json(updatedUser.toJSON());
     } catch (error) {
         next(error);
@@ -208,6 +257,10 @@ export const updateStaff = async (req: Request, res: Response, next: NextFunctio
  */
 export const deleteStaff = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
+        if (!isSuperAdminUser(req.user)) {
+            res.status(403).json({ message: 'Only a Super Admin can delete admin accounts.' });
+            return;
+        }
         const { id } = req.params;
 
         // Prevent deleting yourself (basic safety)
@@ -222,6 +275,18 @@ export const deleteStaff = async (req: Request, res: Response, next: NextFunctio
             res.status(404).json({ message: 'Staff member not found.' });
             return;
         }
+
+        AuditLog.create({
+            action: 'staff_deleted',
+            details: {
+                adminId: req.user?.id,
+                adminName: `${req.user?.firstName} ${req.user?.lastName}`,
+                deletedStaffId: id,
+                deletedStaffName: `${deletedUser.firstName} ${deletedUser.lastName}`,
+                email: deletedUser.email,
+            },
+            isError: false,
+        }).catch(console.error);
 
         res.json({ message: 'Staff member removed successfully.' });
     } catch (error) {
@@ -405,6 +470,19 @@ export const toggleHostelStatus = async (req: Request, res: Response, next: Next
             emitFeeUpdate({ type: 'student_fee', action: 'updated', studentId: student._id.toString() });
         } catch (_) { /* silent */ }
 
+        AuditLog.create({
+            action: 'hostel_status_changed',
+            studentId: student._id as any,
+            details: {
+                adminId: req.user?.id,
+                adminName: `${req.user?.firstName} ${req.user?.lastName}`,
+                studentName: `${student.firstName} ${student.lastName}`,
+                hostelOption,
+                timestamp: new Date().toISOString(),
+            },
+            isError: false,
+        }).catch(console.error);
+
         res.json({
             message: `Hostel status ${hostelOption ? 'enabled' : 'disabled'} for ${student.firstName} ${student.lastName}.`,
             student: {
@@ -500,6 +578,21 @@ export const resetAllStudentFees = async (req: Request, res: Response, next: Nex
             emitFeeUpdate({ type: 'student_fee', action: 'updated' });
         } catch (_) {/* silent */ }
 
+        AuditLog.create({
+            action: 'fee_reset',
+            details: {
+                adminId: req.user?.id,
+                adminName: `${req.user?.firstName} ${req.user?.lastName}`,
+                studentFeesReset: sfReset,
+                feeItemsReset: fiReset,
+                paymentsDeleted: payDel.deletedCount,
+                transactionsDeleted: transDel.deletedCount,
+                autoCreatedFees: autoCreated,
+                timestamp: new Date().toISOString(),
+            },
+            isError: false,
+        }).catch(console.error);
+
         res.json({
             message: 'All student fee records have been reset to unpaid.',
             summary: {
@@ -510,6 +603,134 @@ export const resetAllStudentFees = async (req: Request, res: Response, next: Nex
                 autoCreatedFees: autoCreated,
             },
             errors: errors.length > 0 ? errors : undefined,
+        });
+    } catch (error) {
+        next(error);
+    }
+};
+
+// ─── AUDIT LOG MANAGEMENT ─────────────────────────────────────────────────────
+
+/**
+ * GET /api/admin/audit-logs
+ * Admin: Get paginated audit logs with filters
+ */
+export const getAuditLogs = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+        const page = parseInt(req.query.page as string) || 1;
+        const limit = Math.min(parseInt(req.query.limit as string) || 25, 100);
+        const skip = (page - 1) * limit;
+
+        const filter: Record<string, any> = {};
+
+        if (req.query.action && req.query.action !== 'all') {
+            const actionQuery = req.query.action as string;
+            if (actionQuery.includes(',')) {
+                filter.action = { $in: actionQuery.split(',').map(a => a.trim()) };
+            } else {
+                filter.action = actionQuery;
+            }
+        }
+        if (req.query.isError !== undefined && req.query.isError !== '') {
+            filter.isError = req.query.isError === 'true';
+        }
+        if (req.query.studentId) {
+            // Search by student ObjectId or by admin name in details
+            const searchTerm = (req.query.studentId as string).trim();
+            const matchedStudents = await User.find({
+                $or: [
+                    { studentId: { $regex: searchTerm, $options: 'i' } },
+                    { firstName: { $regex: searchTerm, $options: 'i' } },
+                    { lastName: { $regex: searchTerm, $options: 'i' } },
+                ]
+            }).select('_id').lean();
+
+            if (matchedStudents.length > 0) {
+                filter.studentId = { $in: matchedStudents.map(s => s._id) };
+            } else {
+                // Fall back to reference/details search
+                filter.$or = [
+                    { reference: { $regex: searchTerm, $options: 'i' } },
+                    { 'details.adminName': { $regex: searchTerm, $options: 'i' } },
+                    { 'details.studentName': { $regex: searchTerm, $options: 'i' } },
+                ];
+            }
+        }
+        if (req.query.reference) {
+            filter.reference = { $regex: req.query.reference as string, $options: 'i' };
+        }
+        if (req.query.startDate || req.query.endDate) {
+            filter.createdAt = {};
+            if (req.query.startDate) filter.createdAt.$gte = new Date(req.query.startDate as string);
+            if (req.query.endDate) {
+                const end = new Date(req.query.endDate as string);
+                end.setHours(23, 59, 59, 999);
+                filter.createdAt.$lte = end;
+            }
+        }
+
+        const [logs, total] = await Promise.all([
+            AuditLog.find(filter)
+                .sort({ createdAt: -1 })
+                .skip(skip)
+                .limit(limit)
+                .populate('studentId', 'firstName lastName studentId programme')
+                .lean(),
+            AuditLog.countDocuments(filter),
+        ]);
+
+        res.json({
+            logs: logs.map(log => ({ ...log, id: log._id })),
+            total,
+            page,
+            totalPages: Math.ceil(total / limit),
+        });
+    } catch (error) {
+        next(error);
+    }
+};
+
+/**
+ * DELETE /api/admin/audit-logs/:id
+ * Admin: Delete a single audit log entry
+ */
+export const deleteAuditLog = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+        const { id } = req.params;
+        const log = await AuditLog.findByIdAndDelete(id);
+        if (!log) {
+            res.status(404).json({ message: 'Audit log entry not found.' });
+            return;
+        }
+        res.json({ message: 'Audit log entry deleted.' });
+    } catch (error) {
+        next(error);
+    }
+};
+
+/**
+ * DELETE /api/admin/audit-logs
+ * Admin: Bulk-clear audit logs (optionally filter by date range or action)
+ */
+export const clearAuditLogs = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+        const filter: Record<string, any> = {};
+
+        if (req.query.action && req.query.action !== 'all') {
+            filter.action = req.query.action;
+        }
+        if (req.query.before) {
+            filter.createdAt = { $lte: new Date(req.query.before as string) };
+        }
+        if (req.query.isError !== undefined && req.query.isError !== '') {
+            filter.isError = req.query.isError === 'true';
+        }
+
+        const result = await AuditLog.deleteMany(filter);
+
+        res.json({
+            message: `${result.deletedCount} audit log ${result.deletedCount === 1 ? 'entry' : 'entries'} deleted.`,
+            deletedCount: result.deletedCount,
         });
     } catch (error) {
         next(error);

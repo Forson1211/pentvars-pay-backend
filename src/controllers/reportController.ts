@@ -718,8 +718,31 @@ export const getStudentCountByGroups = async (_req: Request, res: Response, next
         const [byFaculty, byLevel, byType, total] = await Promise.all([
             User.aggregate([
                 { $match: { role: 'student' } },
-                { $group: { _id: '$faculty', count: { $sum: 1 } } },
-                { $sort: { count: -1 } }
+                {
+                    $lookup: {
+                        from: 'programmes',
+                        localField: 'programmeRef',
+                        foreignField: '_id',
+                        as: 'programmeInfo',
+                    },
+                },
+                { $unwind: { path: '$programmeInfo', preserveNullAndEmptyArrays: true } },
+                {
+                    $lookup: {
+                        from: 'faculties',
+                        localField: 'programmeInfo.faculty',
+                        foreignField: '_id',
+                        as: 'facultyInfo',
+                    },
+                },
+                { $unwind: { path: '$facultyInfo', preserveNullAndEmptyArrays: true } },
+                {
+                    $group: {
+                        _id: '$facultyInfo.name',
+                        count: { $sum: 1 },
+                    },
+                },
+                { $sort: { count: -1 } },
             ]),
             User.aggregate([
                 { $match: { role: 'student' } },

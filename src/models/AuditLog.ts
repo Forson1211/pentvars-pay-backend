@@ -4,6 +4,8 @@ export type AuditAction =
     | 'payment_initiated'
     | 'payment_success'
     | 'payment_failed'
+    | 'payment_cancelled'
+    | 'payment_verified'
     | 'webhook_received'
     | 'webhook_verified'
     | 'webhook_rejected'
@@ -12,7 +14,16 @@ export type AuditAction =
     | 'ussd_session_started'
     | 'ussd_payment_initiated'
     | 'reconciliation_run'
-    | 'reconciliation_flag';
+    | 'reconciliation_flag'
+    | 'manual_balance_adjustment'
+    | 'admin_manual_payment'
+    | 'hostel_status_changed'
+    | 'fee_reset'
+    | 'staff_created'
+    | 'staff_deleted'
+    | 'staff_role_changed'
+    | 'staff_status_changed'
+    | 'student_promoted';
 
 export interface IAuditLog extends Document {
     action: AuditAction;

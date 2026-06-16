@@ -140,10 +140,11 @@ const startServer = async () => {
         console.log('');
     });
 
-    // ── Schedule daily reconciliation ──────────────────────────────────────
+    // ── Schedule daily reconciliation & monitor ────────────────────────────
     if (config.nodeEnv === 'production') {
         ReconciliationService.scheduleDailyReconciliation();
     }
+    ReconciliationService.startStuckTransactionsMonitor();
 };
 
 startServer().catch((err) => {

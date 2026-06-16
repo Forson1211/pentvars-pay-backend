@@ -1,6 +1,7 @@
 import { Transaction } from '../models/Transaction';
 import { AuditLog } from '../models/AuditLog';
 import { PaystackService } from './paystackService';
+import { finalizePaymentSuccess } from '../controllers/paymentController';
 
 export interface ReconciliationReport {
     runAt: Date;
@@ -198,5 +199,78 @@ export class ReconciliationService {
         }, msUntilRun);
 
         console.log(`[Reconciliation] Scheduled daily at 2 AM (next run in ${Math.round(msUntilRun / 60000)} minutes)`);
+    }
+
+    /**
+     * Finds transactions in 'pending' or 'processing' status that are:
+     * - Older than 5 minutes (to avoid race conditions with standard flow)
+     * - Newer than 24 hours (we don't need to poll ancient transactions indefinitely)
+     * Queries Paystack to verify their status.
+     * If completed: finalize the payment.
+     * If failed/abandoned: mark them accordingly.
+     */
+    static async checkStuckTransactions(): Promise<void> {
+        const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
+        const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+
+        try {
+            const stuckTransactions = await Transaction.find({
+                status: { $in: ['pending', 'processing'] },
+                paymentChannel: 'paystack',
+                createdAt: { $gte: twentyFourHoursAgo, $lte: fiveMinutesAgo }
+            });
+
+            if (stuckTransactions.length === 0) return;
+
+            console.log(`[Reconciliation] Checking ${stuckTransactions.length} stuck pending/processing transactions...`);
+
+            for (const tx of stuckTransactions) {
+                try {
+                    const psVerify = await PaystackService.verifyTransaction(tx.reference);
+                    if (psVerify.status && psVerify.data?.status === 'success') {
+                        const amountGHSPaid = psVerify.data.amount / 100;
+
+                        if (Math.abs(amountGHSPaid - tx.amountExpected) <= 0.01) {
+                            const channel = psVerify.data.channel || 'paystack';
+                            const gatewayResponse = psVerify.data.gateway_response || 'Auto Recovered';
+                            const paidAt = psVerify.data.paid_at ? new Date(psVerify.data.paid_at) : new Date();
+                            const providerRef = psVerify.data.id?.toString() || 'N/A';
+
+                            console.log(`[Reconciliation] Stuck transaction ${tx.reference} was successful. Finalizing payment...`);
+                            await finalizePaymentSuccess(tx, paidAt, providerRef, amountGHSPaid, channel, gatewayResponse);
+                        }
+                    } else if (psVerify.status && psVerify.data?.status === 'failed') {
+                        console.log(`[Reconciliation] Stuck transaction ${tx.reference} failed. Marking as failed.`);
+                        tx.status = 'failed';
+                        tx.metadata = {
+                            ...tx.metadata,
+                            autoVerifiedStatus: 'failed',
+                            checkedAt: new Date().toISOString()
+                        };
+                        await tx.save();
+                    }
+                } catch (err: any) {
+                    console.error(`[Reconciliation] Error verifying stuck transaction ${tx.reference}:`, err.message);
+                }
+            }
+        } catch (error: any) {
+            console.error('[Reconciliation] Error in checkStuckTransactions:', error.message);
+        }
+    }
+
+    /**
+     * Start a periodic monitor that checks for stuck transactions every N minutes
+     */
+    static startStuckTransactionsMonitor(intervalMs: number = 5 * 60 * 1000): void {
+        console.log(`[Reconciliation] Starting stuck transactions monitor (every ${intervalMs / 60000} mins)`);
+        
+        // Run once on startup after 10 seconds
+        setTimeout(() => {
+            this.checkStuckTransactions().catch(console.error);
+        }, 10000);
+
+        setInterval(() => {
+            this.checkStuckTransactions().catch(console.error);
+        }, intervalMs);
     }
 }
