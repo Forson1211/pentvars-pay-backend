@@ -24,6 +24,7 @@ export interface ITransaction extends Document {
     paidAt?: Date;
     webhookVerified: boolean;
     idempotencyKey?: string;  // prevent duplicate initiations
+    hiddenByStudent?: boolean; // soft-delete: student cleared their history view
     metadata?: Record<string, any>;
     createdAt: Date;
     updatedAt: Date;
@@ -106,6 +107,11 @@ const transactionSchema = new Schema<ITransaction>(
         },
         idempotencyKey: {
             type: String,
+            index: true,
+        },
+        hiddenByStudent: {
+            type: Boolean,
+            default: false,
             index: true,
         },
         metadata: {

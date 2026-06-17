@@ -686,7 +686,7 @@ export const getAllStudentsWithBalance = async (req: Request, res: Response, nex
                 stream: s.stream || 'regular',
                 nationality: s.nationality || 'ghanaian',
                 status: s.status || 'active',
-                avatarUrl: (s.avatarUrl && (s.avatarUrl.startsWith('data:') || s.avatarUrl.startsWith('http'))) ? s.avatarUrl : undefined,
+                avatarUrl: s.avatarUrl || undefined,
                 totalFees: bal?.totalFees || 0,
                 totalPaid: bal?.totalPaid || 0,
                 balance: bal?.totalBalance || 0,
@@ -854,7 +854,8 @@ export const getStudentDetails = async (req: Request, res: Response, next: NextF
                 stream: student.stream || 'regular',
                 nationality: student.nationality || 'ghanaian',
                 status: student.status || 'active',
-                avatarUrl: (student.avatarUrl && (student.avatarUrl.startsWith('data:') || student.avatarUrl.startsWith('http'))) ? student.avatarUrl : undefined,
+                hostelOption: student.hostelOption === true,
+                avatarUrl: student.avatarUrl || undefined,
             },
             fees: fees.map(f => ({
                 id: f._id,
