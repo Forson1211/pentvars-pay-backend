@@ -152,6 +152,17 @@ export async function finalizePaymentSuccess(
             }
         });
 
+        // Create notification for the student
+        if (student) {
+            await Notification.create({
+                recipientId: transaction.studentId,
+                title: 'Payment Confirmed',
+                body: `Your payment of GHS ${amountGHSPaid.toFixed(2)} for ${transaction.description} was processed successfully. Reference: ${transaction.reference}`,
+                type: 'success',
+                data: { transactionId: transaction._id },
+            }).catch(console.error);
+        }
+
         const admins = await User.find({ role: 'admin' }).select('_id');
         if (admins.length > 0 && student) {
             const adminNotifications = admins.map(admin => ({
@@ -1892,6 +1903,15 @@ export const adminAdjustBalance = async (req: Request, res: Response, next: Next
             isError: false,
         }).catch(console.error);
 
+        // Create notification for the student
+        await Notification.create({
+            recipientId: studentId,
+            title: adjustment > 0 ? 'Balance Credited 💰' : 'Balance Adjusted ⚠️',
+            body: `Your fee account was adjusted by GHS ${Math.abs(adjustment).toFixed(2)}. Reason: ${reason}`,
+            type: adjustment > 0 ? 'success' : 'warning',
+            data: { adjustedBy: 'admin' },
+        }).catch(console.error);
+
         emitFeeUpdate({
             type: 'student_fee',
             action: 'updated',
@@ -1998,6 +2018,15 @@ export const adminRecordPayment = async (req: Request, res: Response, next: Next
         );
 
         await updateLedger(feeItem, academicFee, amountNum, category);
+
+        // Create notification for the student
+        await Notification.create({
+            recipientId: studentId,
+            title: 'Payment Recorded Offline 🏦',
+            body: `A manual payment of GHS ${amountNum.toFixed(2)} was recorded on your account. Reference: ${reference}`,
+            type: 'success',
+            data: { transactionId: transaction._id },
+        }).catch(console.error);
 
         await AuditLog.create({
             action: 'admin_manual_payment',
