@@ -341,11 +341,17 @@ export class FeeCalculationService {
             const activeYear = await this.getActiveAcademicYear();
             if (!activeYear) return 0;
 
-            // 1. Find all active FeeTypes for this academic year
-            const feeTypes = await FeeType.find({
-                academicYear: activeYear.yearLabel,
-                isActive: true
-            });
+            // 1. Parallelize fetching active FeeTypes and student's existing FeeItems
+            const [feeTypes, existingFeeItems] = await Promise.all([
+                FeeType.find({
+                    academicYear: activeYear.yearLabel,
+                    isActive: true
+                }),
+                FeeItem.find({
+                    studentId: user._id,
+                    academicYear: activeYear.yearLabel
+                })
+            ]);
 
             let assignedCount = 0;
 
@@ -372,13 +378,11 @@ export class FeeCalculationService {
 
                 if (!isEligible) continue;
 
-                // 3. Check if already assigned
-                const exists = await FeeItem.findOne({
-                    studentId: user._id,
-                    feeTypeId: ft._id,
-                    academicYear: ft.academicYear,
-                    semester: ft.semester
-                });
+                // 3. Check if already assigned (in-memory lookup is extremely fast)
+                const exists = existingFeeItems.some(item => 
+                    item.feeTypeId.toString() === ft._id.toString() &&
+                    item.semester === ft.semester
+                );
 
                 if (!exists) {
                     await FeeItem.create({

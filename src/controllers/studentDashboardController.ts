@@ -107,10 +107,7 @@ export const getStudentDashboard = async (req: Request, res: Response, next: Nex
         // Parallelize fetching payment history, annual fees, and yearly fee items
         const [payments, academicFees, yearFeeItems] = await Promise.all([
             Payment.find({
-                $or: [
-                    { studentFee: studentFee._id },
-                    { feeItem: { $in: feeItems.map(i => i._id) } }
-                ],
+                student: user._id,
                 status: 'completed',
             }).sort({ paymentDate: -1 }),
 
