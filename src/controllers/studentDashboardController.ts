@@ -139,6 +139,7 @@ export const getStudentDashboard = async (req: Request, res: Response, next: Nex
             academicYear: activeYear.toJSON(),
             semester,
             currentAcademic: academicStats,
+            currentStudentFeeId: studentFee._id, // Exposed so frontend can initiate academic fee payments
             breakdown: studentFee.breakdown,
             hostel: hostelStats,
             exams: examStats,

@@ -60,18 +60,34 @@ if (config.nodeEnv === 'development') {
 }
 
 // ─── Rate Limiting ────────────────────────────────────────────────────────────
+// Global limiter — generous enough for real mobile traffic (multiple students,
+// socket-driven re-fetches, etc.)
 const globalLimiter = rateLimit({
     windowMs: 15 * 60 * 1000, // 15 minutes
-    max: 200,
+    max: 600,                 // 600 req per IP per 15 min  (was 200)
     message: { message: 'Too many requests, please try again later.' },
+    standardHeaders: true,
+    legacyHeaders: false,
+    skip: (req) => {
+        // Never rate-limit health-check or webhook endpoints
+        return req.path === '/api/health' || req.path.startsWith('/api/payments/webhook');
+    },
+});
+
+// Admin limiter — admins perform bulk operations (promotion, fee-reset, reports)
+// that touch many records.  Give them a much higher ceiling.
+const adminLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000, // 15 minutes
+    max: 2000,                 // 2000 req per IP per 15 min
+    message: { message: 'Admin rate limit exceeded. Please wait a moment.' },
     standardHeaders: true,
     legacyHeaders: false,
 });
 
-// Stricter rate limit for payment initiation
+// Stricter rate limit for payment initiation (prevent abuse)
 const paymentLimiter = rateLimit({
     windowMs: 5 * 60 * 1000, // 5 minutes
-    max: 10, // max 10 payment initiations per 5 min
+    max: 20,                  // raised from 10 → 20 to handle retries gracefully
     message: { message: 'Too many payment attempts. Please wait and try again.' },
     standardHeaders: true,
     legacyHeaders: false,
@@ -80,11 +96,12 @@ const paymentLimiter = rateLimit({
 // USSD needs generous limits (telecom gateways send many requests)
 const ussdLimiter = rateLimit({
     windowMs: 1 * 60 * 1000, // 1 minute
-    max: 100,
+    max: 200,                 // raised from 100 → 200
     message: 'END Rate limit exceeded.',
 });
 
 app.use('/api/', globalLimiter);
+app.use('/api/admin', adminLimiter); // Admin routes get their own generous limit
 app.use('/api/payments/initiate', paymentLimiter);
 app.use('/api/ussd', ussdLimiter);
 
