@@ -155,6 +155,11 @@ const startServer = async () => {
         console.log(`║  🔗 Webhook:  /api/payments/webhook           ║`);
         console.log('╚══════════════════════════════════════════════╝');
         console.log('');
+        // ── Critical config diagnostics (visible in Render logs) ──
+        const keyType = config.paystack.secretKey?.startsWith('sk_live') ? 'LIVE ✅' : config.paystack.secretKey?.startsWith('sk_test') ? 'TEST ⚠️ (no real payments!)' : 'MISSING ❌';
+        console.log(`[CONFIG] USSD demoMode=${config.ussd.demoMode} (USSD_DEMO_MODE env="${process.env.USSD_DEMO_MODE}")`);
+        console.log(`[CONFIG] USSD serviceCode=${config.ussd.serviceCode}`);
+        console.log(`[CONFIG] Paystack key type: ${keyType}`);
     });
 
     // ── Schedule daily reconciliation & monitor ────────────────────────────
