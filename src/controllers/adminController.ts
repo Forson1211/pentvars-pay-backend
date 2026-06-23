@@ -510,70 +510,86 @@ export const toggleHostelStatus = async (req: Request, res: Response, next: Next
  */
 export const resetAllStudentFees = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
-        // ── Step 1: Reset all StudentFee records ──────────────────────────────
-        const studentFees = await StudentFee.find({});
-        let sfReset = 0;
-        for (const sf of studentFees) {
-            sf.amountPaid = 0;
-            sf.balance = sf.totalFee;
-            sf.status = 'unpaid';
-            await sf.save();
-            sfReset++;
-        }
+        console.log('[RESET] Starting bulk reset of all student fees...');
+        const startTime = Date.now();
 
-        // ── Step 2: Reset all FeeItem records ────────────────────────────────
-        const feeItems = await FeeItem.find({});
-        let fiReset = 0;
-        for (const fi of feeItems) {
-            fi.amountPaid = 0;
-            fi.balance = fi.totalAmount;
-            fi.status = 'pending';
-            await fi.save();
-            fiReset++;
-        }
+        // ── Step 1 & 2: Reset StudentFee & FeeItem using highly efficient bulk updates ──
+        // updateMany with aggregation pipeline lets us refer to fields within the same document (e.g. balance = totalFee / totalAmount)
+        const [sfResult, fiResult] = await Promise.all([
+            StudentFee.updateMany({}, [
+                { $set: { amountPaid: 0, balance: "$totalFee", status: "unpaid" } }
+            ]),
+            FeeItem.updateMany({}, [
+                { $set: { amountPaid: 0, balance: "$totalAmount", status: "pending" } }
+            ])
+        ]);
 
-        // ── Step 3: Delete ALL Payment + Transaction records ─────────────────
+        console.log(`[RESET] StudentFees updated: ${sfResult.modifiedCount}, FeeItems updated: ${fiResult.modifiedCount}`);
+
+        // ── Step 3: Delete ALL Payment + Transaction records ──
         const [payDel, transDel] = await Promise.all([
             Payment.deleteMany({}),
             Transaction.deleteMany({}),
         ]);
 
-        // ── Step 4: Auto-create StudentFee for students who have NONE ─────────
+        console.log(`[RESET] Deleted payments: ${payDel.deletedCount}, transactions: ${transDel.deletedCount}`);
+
+        // ── Step 4: Auto-create StudentFee for students who have NONE in parallel batches ──
         const activeYear = await FeeCalculationService.getActiveAcademicYear();
         const allStudents = await User.find({ role: 'student' });
         let autoCreated = 0;
         const errors: string[] = [];
 
-        for (const student of allStudents) {
-            if (activeYear) {
-                try {
-                    // Only create Sem 1 — Sem 2 is created on-demand when Sem 1 is paid
-                    const sem1Fee = await StudentFee.findOne({ student: student._id, academicYear: activeYear._id, semester: 1 });
-                    if (!sem1Fee) {
-                        await FeeCalculationService.getOrCreateStudentFee(student as any, 1);
-                        autoCreated++;
-                    }
-                    // Assign applicable global fees (exam, dues, etc.)
-                    await FeeCalculationService.assignApplicableGlobalFees(student as any);
-                } catch (e: any) {
-                    errors.push(`${student.firstName} ${student.lastName}: ${e.message}`);
-                }
-            } else {
-                // Fallback if no active academic year
-                const existingFee = await StudentFee.findOne({ student: student._id });
-                if (!existingFee) {
+        if (activeYear) {
+            // Find students who already have a Sem 1 fee document to skip querying in the loop
+            const existingSem1Fees = await StudentFee.find({
+                academicYear: activeYear._id,
+                semester: 1
+            }).select('student').lean();
+            const studentIdsWithFees = new Set(existingSem1Fees.map(f => f.student.toString()));
+
+            // Process students in concurrent batches of 15 to handle high latency
+            const batchSize = 15;
+            for (let i = 0; i < allStudents.length; i += batchSize) {
+                const batch = allStudents.slice(i, i + batchSize);
+                await Promise.all(batch.map(async (student) => {
                     try {
-                        await FeeCalculationService.getOrCreateStudentFee(student as any, 1);
-                        await FeeCalculationService.assignApplicableGlobalFees(student as any);
-                        autoCreated++;
+                        const hasSem1 = studentIdsWithFees.has(student._id.toString());
+                        if (!hasSem1) {
+                            await FeeCalculationService.getOrCreateStudentFee(student as any, 1);
+                            autoCreated++;
+                        } else {
+                            await FeeCalculationService.assignApplicableGlobalFees(student as any);
+                        }
                     } catch (e: any) {
                         errors.push(`${student.firstName} ${student.lastName}: ${e.message}`);
                     }
-                }
+                }));
+            }
+        } else {
+            // Fallback if no active academic year
+            const batchSize = 15;
+            for (let i = 0; i < allStudents.length; i += batchSize) {
+                const batch = allStudents.slice(i, i + batchSize);
+                await Promise.all(batch.map(async (student) => {
+                    try {
+                        const existingFee = await StudentFee.findOne({ student: student._id });
+                        if (!existingFee) {
+                            await FeeCalculationService.getOrCreateStudentFee(student as any, 1);
+                            autoCreated++;
+                        } else {
+                            await FeeCalculationService.assignApplicableGlobalFees(student as any);
+                        }
+                    } catch (e: any) {
+                        errors.push(`${student.firstName} ${student.lastName}: ${e.message}`);
+                    }
+                }));
             }
         }
 
-        // ── Step 5: Broadcast real-time update to all connected students ──────
+        console.log(`[RESET] Auto-created student fees: ${autoCreated}. Total duration: ${Date.now() - startTime}ms`);
+
+        // ── Step 5: Broadcast real-time update to all connected students ──
         try {
             emitFeeUpdate({ type: 'student_fee', action: 'updated' });
         } catch (_) {/* silent */ }
@@ -583,8 +599,8 @@ export const resetAllStudentFees = async (req: Request, res: Response, next: Nex
             details: {
                 adminId: req.user?.id,
                 adminName: `${req.user?.firstName} ${req.user?.lastName}`,
-                studentFeesReset: sfReset,
-                feeItemsReset: fiReset,
+                studentFeesReset: sfResult.modifiedCount,
+                feeItemsReset: fiResult.modifiedCount,
                 paymentsDeleted: payDel.deletedCount,
                 transactionsDeleted: transDel.deletedCount,
                 autoCreatedFees: autoCreated,
@@ -596,8 +612,8 @@ export const resetAllStudentFees = async (req: Request, res: Response, next: Nex
         res.json({
             message: 'All student fee records have been reset to unpaid.',
             summary: {
-                studentFeesReset: sfReset,
-                feeItemsReset: fiReset,
+                studentFeesReset: sfResult.modifiedCount,
+                feeItemsReset: fiResult.modifiedCount,
                 paymentsDeleted: payDel.deletedCount,
                 transactionsDeleted: transDel.deletedCount,
                 autoCreatedFees: autoCreated,
