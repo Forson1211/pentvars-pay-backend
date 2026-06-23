@@ -113,6 +113,21 @@ export const handleUSSDSession = async (req: Request, res: Response): Promise<vo
     const userData = userDataRaw !== undefined && userDataRaw !== null ? String(userDataRaw) : null;
     const serviceCodeRaw = req.body.serviceCode;
     const serviceCode = serviceCodeRaw !== undefined && serviceCodeRaw !== null ? String(serviceCodeRaw) : undefined;
+
+    // Detect mobile network from Arkesel's 'network' field (e.g. 'MTN', 'AIRTELTIGO', 'TELECEL')
+    const arkeselNetwork: string | undefined = req.body.network ? String(req.body.network).toUpperCase() : undefined;
+    const arkeselNetworkMap: Record<string, 'mtn' | 'vod' | 'atl'> = {
+        'MTN': 'mtn',
+        'AIRTELTIGO': 'atl',
+        'AIRTEL': 'atl',
+        'TIGO': 'atl',
+        'VODAFONE': 'vod',
+        'TELECEL': 'vod',
+        'VOD': 'vod',
+    };
+    const detectedNetwork: 'mtn' | 'vod' | 'atl' | undefined = arkeselNetwork ? arkeselNetworkMap[arkeselNetwork] : undefined;
+
+    console.log(`[USSD] Incoming request body: ${JSON.stringify(req.body)}`);
     const newSession = req.body.newSession;
     const type = req.body.type;
 
@@ -365,6 +380,17 @@ export const handleUSSDSession = async (req: Request, res: Response): Promise<vo
                 '2': 'vod',
                 '3': 'atl', // AirtelTigo
             };
+
+            // If Arkesel already told us the network, skip selection and charge directly
+            if (detectedNetwork && !['1', '2', '3', '4'].includes(lastInput)) {
+                session.mobileNetwork = detectedNetwork;
+                session.step = 'processing';
+                sessions.set(sessionId, session);
+                const cleanPhone = phoneNumber.replace('+', '');
+                console.log(`[USSD] Auto-detected network from Arkesel: ${detectedNetwork}, phone: ${cleanPhone}`);
+                await processUSSDMoMoPayment(sessionId, session, cleanPhone, res);
+                return;
+            }
 
             if (!['1', '2', '3', '4'].includes(lastInput)) {
                 sendUSSD(res, 'CON Invalid option.\n1. MTN Mobile Money\n2. Vodafone/Telecel Cash\n3. AirtelTigo Money\n4. Card/Bank Transfer');
@@ -941,7 +967,15 @@ async function processUSSDMoMoPayment(sessionId: string, session: USSDSession, i
 
         console.log('[USSD] Paystack charge result:', JSON.stringify(chargeResult));
 
+        if (!chargeResult?.status || chargeResult?.data === undefined) {
+            console.error('[USSD] Paystack charge API error:', JSON.stringify(chargeResult));
+            sessions.delete(sessionId);
+            sendUSSD(res, `END Payment initiation failed: ${chargeResult?.message || 'Paystack error'}. Please try again or use *170#.`);
+            return;
+        }
+
         const chargeDataStatus = chargeResult?.data?.status;
+        console.log(`[USSD] Charge status: ${chargeDataStatus} | phone: ${localPhone} | network: ${session.mobileNetwork} | ref: ${reference}`);
 
         await AuditLog.create({
             action: 'ussd_payment_initiated',
