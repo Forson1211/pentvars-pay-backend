@@ -80,6 +80,17 @@ export const handleUSSDSession = async (req: Request, res: Response): Promise<vo
         return;
     }
 
+    // ── SERVICE CODE VALIDATION ───────────────────────────────────────────────
+    // Only accept requests for the officially purchased USSD code *928*347#.
+    // Reject any other service code immediately.
+    const ALLOWED_SERVICE_CODE = config.ussd.serviceCode; // '*928*347#'
+    if (serviceCode && serviceCode !== ALLOWED_SERVICE_CODE) {
+        console.warn(`[USSD] Rejected request for unknown serviceCode: ${serviceCode}`);
+        sendUSSD(res, 'END This service is not available on this code.');
+        return;
+    }
+
+
     // Get or create session
     if (!sessions.has(sessionId)) {
         sessions.set(sessionId, { step: 'main_menu', createdAt: new Date() });
