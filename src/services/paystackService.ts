@@ -241,4 +241,12 @@ export class PaystackService {
             metadata,
         });
     }
+
+    /**
+     * Submit an OTP to complete a pending mobile money charge.
+     * Called when Paystack returns status = 'send_otp' on a charge.
+     */
+    static async submitOTP(otp: string, reference: string): Promise<any> {
+        return this.request<any>('POST', '/charge/submit_otp', { otp, reference });
+    }
 }

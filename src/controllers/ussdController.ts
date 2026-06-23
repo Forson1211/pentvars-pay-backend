@@ -25,6 +25,7 @@ interface USSDSession {
     amount?: number;
     mobileNetwork?: 'mtn' | 'vod' | 'atl';
     reference?: string;
+    pendingOtpReference?: string; // set when Paystack returns send_otp
     createdAt: Date;
 }
 
@@ -343,6 +344,45 @@ export const handleUSSDSession = async (req: Request, res: Response): Promise<vo
             sessions.set(sessionId, session);
 
             await processUSSDMoMoPayment(sessionId, session, intlPhone, res);
+            return;
+        }
+
+        // ── AWAITING OTP (Paystack send_otp flow) ─────────────────────────
+        if (session.step === 'awaiting_otp') {
+            const otpCode = lastInput.trim();
+            if (!otpCode || otpCode.length < 4) {
+                sendUSSD(res, 'CON Invalid OTP. Please enter the OTP sent to your phone:');
+                return;
+            }
+
+            const pendingRef = session.pendingOtpReference!;
+            sessions.delete(sessionId);
+
+            try {
+                const otpResult = await PaystackService.submitOTP(otpCode, pendingRef);
+                console.log('[USSD] OTP submit result:', JSON.stringify(otpResult));
+
+                const dataStatus = otpResult?.data?.status;
+                if (dataStatus === 'success') {
+                    sendUSSD(res, [
+                        `END Payment Successful!`,
+                        `Amount: GHS ${session.amount?.toFixed(2)}`,
+                        `Ref: ${pendingRef}`,
+                        `Thank you!`,
+                    ].join('\n'));
+                } else if (dataStatus === 'pay_offline' || dataStatus === 'pending') {
+                    sendUSSD(res, [
+                        `END OTP accepted. Approve the MoMo prompt on your phone.`,
+                        `Ref: ${pendingRef}`,
+                        `You will receive an SMS confirmation.`,
+                    ].join('\n'));
+                } else {
+                    sendUSSD(res, `END OTP verification failed: ${otpResult?.message || 'Unknown error'}. Please try again.`);
+                }
+            } catch (err: any) {
+                console.error('[USSD] OTP submit error:', err);
+                sendUSSD(res, `END OTP error: ${err.message}. Please try again.`);
+            }
             return;
         }
 
@@ -671,6 +711,10 @@ async function processUSSDMoMoPayment(sessionId: string, session: USSDSession, i
             { studentId: student.studentId, category, description, transactionId: transaction.id }
         );
 
+        console.log('[USSD] Paystack charge result:', JSON.stringify(chargeResult));
+
+        const chargeDataStatus = chargeResult?.data?.status;
+
         await AuditLog.create({
             action: 'ussd_payment_initiated',
             reference,
@@ -678,19 +722,31 @@ async function processUSSDMoMoPayment(sessionId: string, session: USSDSession, i
             amount: session.amount,
             category,
             channel: 'ussd-momo',
-            details: { network: session.mobileNetwork, chargeStatus: chargeResult?.status },
+            details: { network: session.mobileNetwork, chargeStatus: chargeDataStatus },
             isError: false,
         }).catch(console.error);
 
-        sessions.delete(sessionId);
-
-        if (chargeResult?.status) {
-            sendUSSD(res,
-                `END Payment of GHS ${session.amount?.toFixed(2)} initiated.\nRef: ${reference}\nApprove the prompt on your phone.\nYou will receive an SMS confirmation.`
-            );
-        } else {
+        if (!chargeResult?.status) {
+            sessions.delete(sessionId);
             sendUSSD(res, `END Payment failed: ${chargeResult?.message || 'Unknown error'}. Try again.`);
+            return;
         }
+
+        // ── OTP REQUIRED: Paystack needs the user to enter an OTP ────────────
+        if (chargeDataStatus === 'send_otp') {
+            // Keep the session alive so the user can enter the OTP
+            session.step = 'awaiting_otp';
+            session.pendingOtpReference = reference;
+            sessions.set(sessionId, session);
+            sendUSSD(res, `CON Enter the OTP sent to your phone to confirm payment of GHS ${session.amount?.toFixed(2)}:`);
+            return;
+        }
+
+        // ── APPROVED DIRECTLY (pay_offline, pending — user approves MoMo prompt) ──
+        sessions.delete(sessionId);
+        sendUSSD(res,
+            `END Payment of GHS ${session.amount?.toFixed(2)} initiated.\nRef: ${reference}\nApprove the prompt on your phone.\nYou will receive an SMS confirmation.`
+        );
     } catch (error: any) {
         console.error('[USSD] MoMo payment error:', error);
         sessions.delete(sessionId);
