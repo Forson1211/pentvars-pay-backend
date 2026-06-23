@@ -878,16 +878,13 @@ async function processDemoPayment(
         });
 
         // Finalize transaction using the shared payment controller function.
-        // This updates the ledger (decrementing StudentFee/FeeItem balance),
-        // creates the Payment record, audits the success, sends real-time socket events,
-        // and creates notifications.
         await finalizePaymentSuccess(
             transaction,
             new Date(),
-            reference, // providerReference
+            reference,
             session.amount,
-            paymentMethod === 'mobile_money' ? 'mobile_money' : 'bank_transfer', // channel
-            'Approved (Demo USSD)' // gatewayResponse
+            paymentMethod === 'mobile_money' ? 'mobile_money' : 'bank_transfer',
+            'Approved (Demo USSD)'
         );
 
         sessions.delete(sessionId);
@@ -923,14 +920,13 @@ async function processUSSDMoMoPayment(sessionId: string, session: USSDSession, i
         return;
     }
 
-    console.log(`[USSD] LIVE mode — charging ${intlPhone} via Paystack`);
-    // ── LIVE MODE: Real Paystack charge ──
+    console.log(`[USSD] LIVE mode — preparing charge for ${intlPhone} via Paystack`);
     const reference = generateReference('USSD');
     const category = session.feeType as any || 'academic';
     const description = `USSD ${category} fee payment`;
 
     try {
-        // Create pending transaction
+        // Create pending transaction BEFORE closing session (no race condition on reference)
         const transaction = await Transaction.create({
             studentId: student.id,
             feeItemId: session.feeItemId || undefined,
@@ -949,71 +945,75 @@ async function processUSSDMoMoPayment(sessionId: string, session: USSDSession, i
         });
 
         // Format to local 10-digit phone number for Paystack GHS Mobile Money API (e.g. 055...)
-        const localPhone = intlPhone.startsWith('233') 
-            ? '0' + intlPhone.substring(3) 
+        const localPhone = intlPhone.startsWith('233')
+            ? '0' + intlPhone.substring(3)
             : (intlPhone.startsWith('0') ? intlPhone : '0' + intlPhone);
 
-        console.log(`[USSD] Charging via Paystack with localPhone: ${localPhone}`);
+        const networkLabel = session.mobileNetwork === 'mtn' ? 'MTN' : session.mobileNetwork === 'vod' ? 'Telecel' : 'AirtelTigo';
+        console.log(`[USSD] Transaction created: ${reference} | localPhone: ${localPhone} | network: ${networkLabel}`);
 
-        // Charge via Paystack
-        const chargeResult = await PaystackService.chargeMobileMoney(
-            session.amount,
-            student.email,
-            reference,
-            localPhone,
-            session.mobileNetwork || 'mtn',
-            { studentId: student.studentId, category, description, transactionId: transaction.id }
-        );
-
-        console.log('[USSD] Paystack charge result:', JSON.stringify(chargeResult));
-
-        if (!chargeResult?.status || chargeResult?.data === undefined) {
-            console.error('[USSD] Paystack charge API error:', JSON.stringify(chargeResult));
-            sessions.delete(sessionId);
-            sendUSSD(res, `END Payment initiation failed: ${chargeResult?.message || 'Paystack error'}. Please try again or use *170#.`);
-            return;
-        }
-
-        const chargeDataStatus = chargeResult?.data?.status;
-        console.log(`[USSD] Charge status: ${chargeDataStatus} | phone: ${localPhone} | network: ${session.mobileNetwork} | ref: ${reference}`);
-
-        await AuditLog.create({
-            action: 'ussd_payment_initiated',
-            reference,
-            studentId: student.id,
-            amount: session.amount,
-            category,
-            channel: 'ussd-momo',
-            details: { network: session.mobileNetwork, chargeStatus: chargeDataStatus },
-            isError: false,
-        }).catch(console.error);
-
-        if (!chargeResult?.status) {
-            sessions.delete(sessionId);
-            sendUSSD(res, `END Payment failed: ${chargeResult?.message || 'Unknown error'}. Try again.`);
-            return;
-        }
-
-        // ── send_otp: treat same as pending MoMo approval (OTP removed from USSD) ──
-        if (chargeDataStatus === 'send_otp') {
-            sessions.delete(sessionId);
-            sendUSSD(res, [
-                `END Payment of GHS ${session.amount?.toFixed(2)} initiated.`,
-                `Please enter your MoMo PIN on the prompt that appears to confirm.`,
-                `If the prompt doesn't show, dial *170# -> My Wallet -> Approvals.`,
-            ].join('\n'));
-            return;
-        }
-
-        // ── APPROVED DIRECTLY (pay_offline, pending — user approves MoMo prompt) ──
+        // ── CRITICAL FIX: Close the USSD session FIRST before charging ──
+        // While the student's phone is inside an active USSD session (*928*347#),
+        // MTN/Telecel CANNOT deliver a second USSD push prompt (MoMo PIN screen).
+        // End the session now so the phone is free to receive the MoMo push.
         sessions.delete(sessionId);
         sendUSSD(res, [
-            `END Payment of GHS ${session.amount?.toFixed(2)} initiated.`,
-            `Please enter your MoMo PIN on the prompt that appears to confirm.`,
-            `If the prompt doesn't show, dial *170# -> My Wallet -> Approvals.`,
+            `END GHS ${session.amount.toFixed(2)} payment initiated.`,
+            `A ${networkLabel} MoMo prompt will appear shortly.`,
+            `Enter your MoMo PIN to confirm.`,
+            `No prompt? Dial *170# > My Wallet > Approvals.`,
         ].join('\n'));
+
+        // ── Fire Paystack charge AFTER session ends (asynchronously) ──
+        // The phone line is now free to receive the MTN/Telecel push notification.
+        setImmediate(async () => {
+            try {
+                console.log(`[USSD] Async: sending charge to Paystack now (ref: ${reference})`);
+                const chargeResult = await PaystackService.chargeMobileMoney(
+                    session.amount!,
+                    student.email,
+                    reference,
+                    localPhone,
+                    session.mobileNetwork || 'mtn',
+                    { studentId: student.studentId, category, description, transactionId: transaction.id }
+                );
+
+                console.log('[USSD] Paystack charge result:', JSON.stringify(chargeResult));
+                const chargeDataStatus = chargeResult?.data?.status;
+                console.log(`[USSD] Charge status: ${chargeDataStatus} | phone: ${localPhone} | network: ${session.mobileNetwork} | ref: ${reference}`);
+
+                if (!chargeResult?.status) {
+                    console.error(`[USSD] Charge failed for ref ${reference}:`, chargeResult?.message);
+                    await Transaction.findByIdAndUpdate(transaction.id, {
+                        status: 'failed',
+                        description: chargeResult?.message || 'Paystack charge failed',
+                    }).catch(console.error);
+                    return;
+                }
+
+                await AuditLog.create({
+                    action: 'ussd_payment_initiated',
+                    reference,
+                    studentId: student.id,
+                    amount: session.amount,
+                    category,
+                    channel: 'ussd-momo',
+                    details: { network: session.mobileNetwork, chargeStatus: chargeDataStatus, localPhone },
+                    isError: false,
+                }).catch(console.error);
+
+                console.log(`[USSD] MoMo prompt sent to customer's phone. Awaiting PIN confirmation. ref: ${reference}`);
+            } catch (asyncError: any) {
+                console.error(`[USSD] Async charge error for ref ${reference}:`, asyncError.message);
+                await Transaction.findByIdAndUpdate(transaction.id, {
+                    status: 'failed',
+                    description: asyncError.message,
+                }).catch(console.error);
+            }
+        });
+
     } catch (error: any) {
-        console.error('[USSD] MoMo payment error:', error);
+        console.error('[USSD] MoMo payment setup error:', error);
         sessions.delete(sessionId);
         sendUSSD(res, `END Payment error: ${error.message}. Please try again.`);
     }
