@@ -242,6 +242,7 @@ async function makeUSSDRequest() {
 
 // Bind all UI event listeners programmatically on page load
 window.addEventListener('DOMContentLoaded', () => {
+    // Initial clock update
     updatePhoneTime();
 
     // Bind dial buttons
@@ -287,5 +288,14 @@ window.addEventListener('DOMContentLoaded', () => {
     const clearLogsButton = document.getElementById('clear-logs-btn');
     if (clearLogsButton) {
         clearLogsButton.addEventListener('click', clearLogs);
+    }
+
+    // Keep hidden sim-phone in sync with visible input (replaces oninput attribute)
+    const visibleSimInput = document.getElementById('sim-phone-visible');
+    const hiddenSimInput = document.getElementById('sim-phone');
+    if (visibleSimInput && hiddenSimInput) {
+        visibleSimInput.addEventListener('input', () => {
+            hiddenSimInput.value = visibleSimInput.value;
+        });
     }
 });

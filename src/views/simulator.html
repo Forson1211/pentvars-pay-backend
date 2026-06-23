@@ -478,8 +478,7 @@
 <!-- SIM Number input below phone -->
 <div class="sim-label">
     <label for="sim-phone-visible">📱 SIM Number:</label>
-    <input type="tel" id="sim-phone-visible" value="" placeholder="Enter SIM Number (e.g. 0552695728)" maxlength="13"
-           oninput="document.getElementById('sim-phone').value = this.value">
+    <input type="tel" id="sim-phone-visible" value="" placeholder="Enter SIM Number (e.g. 0552695728)" maxlength="13">
     <input type="hidden" id="sim-phone" value="">
 </div>
 
@@ -498,25 +497,5 @@
 </div>
 
 <script src="/api/ussd/simulator-v4.js"></script>
-<script>
-    // Live clock
-    function updateClock() {
-        const now = new Date();
-        let h = now.getHours(), m = now.getMinutes();
-        const ampm = h >= 12 ? 'PM' : 'AM';
-        h = h % 12 || 12;
-        document.getElementById('phone-time').textContent =
-            h + ':' + String(m).padStart(2, '0') + ' ' + ampm;
-    }
-    updateClock();
-    setInterval(updateClock, 10000);
-
-    // Keep hidden sim-phone in sync with visible input
-    const vis = document.getElementById('sim-phone-visible');
-    const hid = document.getElementById('sim-phone');
-    if (vis && hid) {
-        vis.addEventListener('input', () => hid.value = vis.value);
-    }
-</script>
 </body>
 </html>
