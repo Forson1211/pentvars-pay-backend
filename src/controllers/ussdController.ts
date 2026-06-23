@@ -396,18 +396,16 @@ export const handleUSSDSession = async (req: Request, res: Response): Promise<vo
                                 .select('balance amountPaid totalAmount status');
                             if (updatedFee) {
                                 newBalance = updatedFee.balance;
-                                feeSummary = updatedFee.status === 'paid'
-                                    ? 'FULLY PAID'
-                                    : `Balance: GHS ${newBalance.toFixed(2)}`;
+                                const isPaid = updatedFee.status === 'paid' || newBalance <= 0;
+                                feeSummary = `Balance: GHS ${newBalance.toFixed(2)}${isPaid ? ' (FULLY PAID)' : ''}`;
                             }
                         } else if (session.feeItemId) {
                             const updatedItem = await FeeItem.findById(session.feeItemId)
                                 .select('balance amountPaid totalAmount status');
                             if (updatedItem) {
                                 newBalance = updatedItem.balance;
-                                feeSummary = updatedItem.status === 'paid'
-                                    ? 'FULLY PAID'
-                                    : `Balance: GHS ${newBalance.toFixed(2)}`;
+                                const isPaid = updatedItem.status === 'paid' || newBalance <= 0;
+                                feeSummary = `Balance: GHS ${newBalance.toFixed(2)}${isPaid ? ' (FULLY PAID)' : ''}`;
                             }
                         }
                     } catch (fetchErr) {
