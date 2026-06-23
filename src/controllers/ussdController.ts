@@ -861,12 +861,19 @@ async function processUSSDMoMoPayment(sessionId: string, session: USSDSession, i
             metadata: { intlPhone, network: session.mobileNetwork, channel: 'ussd' },
         });
 
+        // Format to local 10-digit phone number for Paystack GHS Mobile Money API (e.g. 055...)
+        const localPhone = intlPhone.startsWith('233') 
+            ? '0' + intlPhone.substring(3) 
+            : (intlPhone.startsWith('0') ? intlPhone : '0' + intlPhone);
+
+        console.log(`[USSD] Charging via Paystack with localPhone: ${localPhone}`);
+
         // Charge via Paystack
         const chargeResult = await PaystackService.chargeMobileMoney(
             session.amount,
             student.email,
             reference,
-            intlPhone,
+            localPhone,
             session.mobileNetwork || 'mtn',
             { studentId: student.studentId, category, description, transactionId: transaction.id }
         );
