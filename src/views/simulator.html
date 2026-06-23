@@ -478,9 +478,9 @@
 <!-- SIM Number input below phone -->
 <div class="sim-label">
     <label for="sim-phone-visible">📱 SIM Number:</label>
-    <input type="tel" id="sim-phone-visible" value="0244123456" placeholder="0244123456" maxlength="13"
+    <input type="tel" id="sim-phone-visible" value="" placeholder="Enter SIM Number (e.g. 0552695728)" maxlength="13"
            oninput="document.getElementById('sim-phone').value = this.value">
-    <input type="hidden" id="sim-phone" value="0244123456">
+    <input type="hidden" id="sim-phone" value="">
 </div>
 
 <!-- Hidden debugger panel (JS refs) -->
@@ -497,7 +497,7 @@
     </div>
 </div>
 
-<script src="/api/ussd/simulator.js?v=2"></script>
+<script src="/api/ussd/simulator.js?v=3"></script>
 <script>
     // Live clock
     function updateClock() {
