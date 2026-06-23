@@ -14,38 +14,106 @@ import { FeeType } from '../models/FeeType';
 import { FeeItem } from '../models/FeeItem';
 import { config } from '../config/env';
 
-/**
- * EXACT VISUAL REPLICA SEED
- * Matches your screenshot headers, card names, and amounts perfectly.
- */
-
 const FACULTIES = [
-    { name: 'Engineering, Science & Computing (FESAC)', code: 'FESAC' },
-    { name: 'Built Environment & BEng Programmes', code: 'BENV' },
-    { name: 'Law', code: 'LAW' },
+    { name: 'Faculty of Business Administration', code: 'FBA' },
+    { name: 'Faculty of Engineering, Science & Computing', code: 'FESAC' },
+    { name: 'Faculty of Health & Allied Sciences', code: 'FHAS' },
+    { name: 'Faculty of Law', code: 'FLAW' },
+    { name: 'Faculty of Education', code: 'FEDU' },
     { name: 'Pentecost School of Theology & Missions', code: 'PSTM' },
-    { name: 'Business Administration', code: 'BA' },
-    { name: 'Health and Allied Science (FEHAS)', code: 'FEHAS' },
-    { name: 'Doctor of Herbal Medicine', code: 'DHM' },
-    { name: 'FEHAS – Engineering Programmes', code: 'FEHAS-ENG' },
-    { name: 'Nursing', code: 'NUR' },
-    { name: 'Physician Assistantship', code: 'PA' },
-    { name: 'Midwifery', code: 'MID' },
-    { name: 'Business Administration – Logistics & Supply Chain Management', code: 'BA-LOG' },
 ];
 
-const PROGRAMMES_MAP: Record<string, string[]> = {
-    'FESAC': ['BSc. Information Technology', 'BSc. Computer Science', 'BSc. Computer Engineering', 'BSc. Mathematics'],
-    'BENV': ['BSc. Architecture', 'BSc. Quantity Surveying', 'BSc. Construction Technology'],
+const PROGRAMMES_MAP: Record<string, { programmeName: string; code: string }[]> = {
+    FBA: [
+        { programmeName: 'Accounting', code: 'BAC' },
+        { programmeName: 'Banking & Finance', code: 'BBF' },
+        { programmeName: 'Business Administration / Commerce', code: 'BCOM' },
+        { programmeName: 'Human Resource Management', code: 'BHR' },
+        { programmeName: 'Marketing', code: 'BMK' },
+        { programmeName: 'Logistics & Supply Chain Management', code: 'BA-LOG' },
+    ],
+    FESAC: [
+        { programmeName: 'Information Technology', code: 'BIT' },
+        { programmeName: 'Industrial Software Engineering', code: 'BISE' },
+        { programmeName: 'Applied Science', code: 'BAS' },
+        { programmeName: 'Computer Science', code: 'BCS' },
+        { programmeName: 'Computer Technology Engineering', code: 'BCTE' },
+        { programmeName: 'Electrical & Electronic Engineering', code: 'BEEEE' },
+        { programmeName: 'Architecture / Built Environment', code: 'BERA' },
+        { programmeName: 'Quantity Surveying & Construction', code: 'BQSC' },
+        { programmeName: 'BEng Programmes', code: 'BENG' },
+        { programmeName: 'Built Environment Programmes', code: 'BEP' },
+    ],
+    FHAS: [
+        { programmeName: 'Health Information Management', code: 'BHIM' },
+        { programmeName: 'Nursing', code: 'BNS' },
+        { programmeName: 'Midwifery', code: 'BMWF' },
+        { programmeName: 'Physician Assistantship', code: 'PA' },
+        { programmeName: 'Doctor of Herbal Medicine', code: 'DHMD' },
+    ],
+    FLAW: [
+        { programmeName: 'Law', code: 'BLAW' },
+        { programmeName: 'Legal Studies', code: 'BLSC' },
+    ],
+    FEDU: [
+        { programmeName: 'Education Programmes', code: 'EDUP' },
+    ],
+    PSTM: [
+        { programmeName: 'Theology Programmes', code: 'THEO' },
+        { programmeName: 'Missions Programmes', code: 'MISS' },
+    ],
 };
 
-const getTemplateParams = (facultyCode: string, level: string) => {
-    const isL400 = level === '400';
-    let tuition = isL400 ? 3270.99 : 2553;
+function getTemplateParams(facultyCode: string, programmeCode: string, level: string) {
+    let tuition = 2500;
+    let practicalFee = 0;
+    let cipsFee = 0;
+    const isL100 = level === '100';
+
+    if (facultyCode === 'FBA') {
+        if (programmeCode === 'BA-LOG') {
+            tuition = 2750;
+            cipsFee = 800;
+        } else {
+            tuition = 2783;
+        }
+    } else if (facultyCode === 'FESAC') {
+        if (['BERA', 'BQSC', 'BEP'].includes(programmeCode)) {
+            tuition = 2783;
+            practicalFee = 800;
+        } else {
+            tuition = 2553;
+        }
+    } else if (facultyCode === 'FHAS') {
+        if (['BNS', 'BMWF', 'PA'].includes(programmeCode)) {
+            tuition = isL100 ? 3420 : 4400;
+            practicalFee = 900;
+        } else if (programmeCode === 'DHMD') {
+            tuition = isL100 ? 3974 : 5500;
+            practicalFee = 1000;
+        } else { // BHIM
+            tuition = 3420;
+            practicalFee = 900;
+        }
+    } else if (facultyCode === 'FLAW') {
+        tuition = 2750;
+        practicalFee = 900;
+    } else if (facultyCode === 'PSTM') {
+        tuition = 2553;
+    } else if (facultyCode === 'FEDU') {
+        tuition = 2500;
+    }
+
     return {
-        tuitionPerSemester: tuition, academicUserFee: 0, srcFee: 0, practicalFee: 0, cipsFee: 0, latePenalty: 0, scholarshipDiscount: 0,
+        tuitionPerSemester: tuition,
+        academicUserFee: 492, // Annual
+        srcFee: 50, // Annual
+        practicalFee,
+        cipsFee,
+        latePenalty: 100,
+        scholarshipDiscount: 0,
     };
-};
+}
 
 const seedDatabase = async () => {
     try {
@@ -78,16 +146,16 @@ const seedDatabase = async () => {
         faculties.forEach(f => { facCodeMap[f.code!] = f; });
 
         const progMap: Record<string, any> = {};
-        for (const [code, names] of Object.entries(PROGRAMMES_MAP)) {
+        for (const [code, progs] of Object.entries(PROGRAMMES_MAP)) {
             const fac = facCodeMap[code];
             if (!fac) continue;
-            for (const name of names) {
+            for (const progData of progs) {
                 const prog = await Programme.findOneAndUpdate(
-                    { faculty: fac._id, programmeName: name },
-                    { faculty: fac._id, programmeName: name },
+                    { faculty: fac._id, code: progData.code },
+                    { faculty: fac._id, programmeName: progData.programmeName, code: progData.code },
                     { upsert: true, new: true }
                 );
-                progMap[name] = prog;
+                progMap[progData.programmeName] = prog;
             }
         }
 
@@ -100,12 +168,12 @@ const seedDatabase = async () => {
         }
 
         let forson = await User.findOne({ email: 'puit22217120@pentvars.edu.gh' });
-        const forsonProg = progMap['BSc. Information Technology'];
+        const forsonProg = progMap['Information Technology'];
         if (!forson) {
             forson = await User.create({
                 email: 'puit22217120@pentvars.edu.gh', password: '370563Forson',
                 firstName: 'Forson', lastName: 'Odonkor', role: 'student', studentId: 'PUIT/22217120',
-                programme: 'BSc. Information Technology', level: '400', currentLevel: 400,
+                programme: 'Information Technology', level: '400', currentLevel: 400,
                 graduationLevel: 400, entryLevel: 100, status: 'active',
                 stream: 'regular', nationality: 'ghanaian',
                 programmeRef: forsonProg?._id,
@@ -114,22 +182,43 @@ const seedDatabase = async () => {
             forson.password = '370563Forson';
             forson.currentLevel = 400;
             forson.graduationLevel = 400;
+            forson.programme = 'Information Technology';
             forson.programmeRef = forsonProg?._id || forson.programmeRef;
             await forson.save();
         }
 
         console.log('💸 Generating All Original Fee Templates...');
         const levels = ['100', '200', '300', '400'];
+        const studentTypes = ['regular', 'weekend', 'international'];
+        const multipliers = { regular: 1.0, weekend: 1.1, international: 1.5 };
+
         for (const fac of faculties) {
             const progs = await Programme.find({ faculty: fac._id });
             for (const prog of progs) {
                 for (const level of levels) {
-                    const params = getTemplateParams(fac.code!, level);
-                    await FeeTemplate.create({
-                        academicYear: academicYear._id, studentType: 'regular',
-                        faculty: fac._id, programme: prog._id, level, ...params,
-                        isActive: true, createdBy: admin._id
-                    });
+                    const baseParams = getTemplateParams(fac.code!, prog.code!, level);
+                    for (const studentType of studentTypes) {
+                        const multiplier = multipliers[studentType as keyof typeof multipliers];
+                        await FeeTemplate.create({
+                            academicYear: academicYear._id,
+                            studentType,
+                            faculty: fac._id,
+                            programme: prog._id,
+                            level,
+                            tuitionPerSemester: Math.round(baseParams.tuitionPerSemester * multiplier),
+                            sem2TuitionPerSemester: Math.round(baseParams.tuitionPerSemester * multiplier),
+                            academicUserFee: baseParams.academicUserFee,
+                            srcFee: baseParams.srcFee,
+                            practicalFee: baseParams.practicalFee,
+                            cipsFee: baseParams.cipsFee,
+                            latePenalty: baseParams.latePenalty,
+                            scholarshipDiscount: baseParams.scholarshipDiscount,
+                            installmentAllowed: true,
+                            maxInstallments: 3,
+                            isActive: true,
+                            createdBy: admin._id
+                        });
+                    }
                 }
             }
         }
@@ -152,7 +241,7 @@ const seedDatabase = async () => {
 
         console.log('🔗 Replicating exact fees for Forson Odonkor...');
         const forsonTemplate = await FeeTemplate.findOne({ 
-            faculty: facCodeMap['FESAC']?._id, programme: progMap['BSc. Information Technology']?._id,
+            faculty: facCodeMap['FESAC']?._id, programme: progMap['Information Technology']?._id,
             level: '400', studentType: 'regular'
         });
 
@@ -164,7 +253,6 @@ const seedDatabase = async () => {
             });
         }
 
-        // ASSIGN ALL THREE GENERAL FEES (HOSTEL, SUPPLEMENTARY, RESIT)
         const generalTypes = [hostelType, supplementaryType, resitType];
         for (const type of generalTypes) {
             await FeeItem.create({
@@ -174,7 +262,6 @@ const seedDatabase = async () => {
             });
         }
 
-        // SEED PAYMENT HISTORY for analytics chart (last 12 months)
         console.log('📊 Adding payment history for analytics...');
         const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
         const paymentAmounts = [1200, 980, 1540, 2100, 875, 1650, 2300, 1900, 1100, 2450, 1800, 1350];
@@ -192,7 +279,7 @@ const seedDatabase = async () => {
                 description: `Academic fee payment - ${months[d.getMonth()]} ${d.getFullYear()}`,
             });
         }
-        console.log('✅ Payment history added (12 months of data).');
+        console.log('✅ Payment history added.');
 
         console.log('\n✅ DATABASE EXACTLY REPLICATED TO MATCH SCREENSHOT!');
         process.exit(0);
