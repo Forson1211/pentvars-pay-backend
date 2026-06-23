@@ -969,7 +969,7 @@ async function processUSSDMoMoPayment(sessionId: string, session: USSDSession, i
         // We wait 5 seconds so MTN fully processes the session closure before we
         // ask them to open a NEW USSD push channel for the MoMo PIN prompt.
         // (setImmediate fired < 1ms after response — MTN hadn't cleared the session yet)
-        const chargeDelayMs = 5000;
+        const chargeDelayMs = 1500; // 1.5s — enough for MTN to close USSD before MoMo push arrives
         console.log(`[USSD] Waiting ${chargeDelayMs}ms for MTN to clear USSD session before charging...`);
 
         setTimeout(async () => {
