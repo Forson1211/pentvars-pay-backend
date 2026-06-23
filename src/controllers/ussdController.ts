@@ -443,6 +443,102 @@ export const handleUSSDSession = async (req: Request, res: Response): Promise<vo
             return;
         }
 
+        // ── AWAITING MOMO APPROVAL (Status polling/checking) ──────────────────
+        if (session.step === 'awaiting_momo_approval') {
+            const pendingRef = session.pendingOtpReference!;
+
+            if (lastInput === '1') {
+                try {
+                    const verifyResult = await PaystackService.verifyTransaction(pendingRef);
+                    console.log('[USSD] MoMo status check result:', JSON.stringify(verifyResult));
+
+                    const status = verifyResult?.data?.status;
+
+                    if (status === 'success') {
+                        // ── 1. Update DB, ledger, sockets ──────
+                        const txn = await Transaction.findOne({ reference: pendingRef });
+                        if (txn) {
+                            await finalizePaymentSuccess(
+                                txn,
+                                new Date(),
+                                verifyResult.data?.id?.toString() || pendingRef,
+                                session.amount!,
+                                'mobile_money',
+                                'MoMo Verified via USSD Menu'
+                            );
+                        }
+
+                        // ── 2. Fetch student's updated balance ───────
+                        let studentName = session.studentId || 'Student';
+                        let newBalance = 0;
+                        let feeSummary = '';
+
+                        try {
+                            const student = await User.findById(session.studentDbId)
+                                .select('firstName lastName');
+                            if (student) {
+                                studentName = `${student.firstName} ${student.lastName}`;
+                            }
+
+                            if (session.studentFeeId) {
+                                const updatedFee = await StudentFee.findById(session.studentFeeId)
+                                    .select('balance amountPaid totalAmount status');
+                                if (updatedFee) {
+                                    newBalance = updatedFee.balance;
+                                    const isPaid = updatedFee.status === 'paid' || newBalance <= 0;
+                                    feeSummary = `Balance: GHS ${newBalance.toFixed(2)}${isPaid ? ' (FULLY PAID)' : ''}`;
+                                }
+                            } else if (session.feeItemId) {
+                                const updatedItem = await FeeItem.findById(session.feeItemId)
+                                    .select('balance amountPaid totalAmount status');
+                                if (updatedItem) {
+                                    newBalance = updatedItem.balance;
+                                    const isPaid = updatedItem.status === 'paid' || newBalance <= 0;
+                                    feeSummary = `Balance: GHS ${newBalance.toFixed(2)}${isPaid ? ' (FULLY PAID)' : ''}`;
+                                }
+                            }
+                        } catch (fetchErr) {
+                            console.error('[USSD] Balance fetch error after check:', fetchErr);
+                        }
+
+                        sessions.delete(sessionId);
+                        sendUSSD(res, [
+                            `END PAYMENT SUCCESSFUL`,
+                            `Name: ${studentName}`,
+                            `ID: ${session.studentId}`,
+                            `Paid: GHS ${session.amount?.toFixed(2)}`,
+                            feeSummary,
+                            `Ref: ${pendingRef}`,
+                            `Thank you!`,
+                        ].filter(Boolean).join('\n'));
+                        return;
+                    } else if (status === 'failed') {
+                        sessions.delete(sessionId);
+                        sendUSSD(res, `END Payment failed or was declined. Reference: ${pendingRef}. Please dial *928*347# and try again.`);
+                        return;
+                    } else {
+                        // Still pending
+                        sendUSSD(res, [
+                            `CON Payment is still pending approval.`,
+                            `Please approve the MoMo prompt on your phone, then select:`,
+                            `1. Confirm Payment Status`,
+                            `2. Exit`,
+                        ].join('\n'));
+                        return;
+                    }
+                } catch (err: any) {
+                    console.error('[USSD] Status check error:', err);
+                    sendUSSD(res, `END Error checking payment status. Please dial *928*347# and try again.`);
+                    return;
+                }
+            } else {
+                // User chose 2 or other options to cancel/exit
+                sessions.delete(sessionId);
+                sendUSSD(res, `END Session closed. If you approved the MoMo prompt, your account will be updated automatically via webhook. Thank you!`);
+                return;
+            }
+        }
+
         // ── BALANCE CHECK (already sent — just cleanup) ────────────────────
         if (session.step === 'check_balance') {
             sessions.delete(sessionId);
@@ -800,10 +896,16 @@ async function processUSSDMoMoPayment(sessionId: string, session: USSDSession, i
         }
 
         // ── APPROVED DIRECTLY (pay_offline, pending — user approves MoMo prompt) ──
-        sessions.delete(sessionId);
-        sendUSSD(res,
-            `END Payment of GHS ${session.amount?.toFixed(2)} initiated.\nRef: ${reference}\nApprove the prompt on your phone.\nYou will receive an SMS confirmation.`
-        );
+        session.step = 'awaiting_momo_approval';
+        session.pendingOtpReference = reference;
+        sessions.set(sessionId, session);
+        sendUSSD(res, [
+            `CON Payment of GHS ${session.amount?.toFixed(2)} initiated.`,
+            `Approve the prompt on your phone.`,
+            `Once approved, select:`,
+            `1. Confirm Payment Status`,
+            `2. Exit`,
+        ].join('\n'));
     } catch (error: any) {
         console.error('[USSD] MoMo payment error:', error);
         sessions.delete(sessionId);
