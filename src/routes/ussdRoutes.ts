@@ -20,8 +20,8 @@ router.get('/simulator', (req, res) => {
     res.sendFile(path.resolve(process.cwd(), 'src/views/simulator.html'));
 });
 
-router.get('/simulator.js', (req, res) => {
-    res.sendFile(path.resolve(process.cwd(), 'src/views/simulator.js'));
+router.get(['/simulator.js', '/simulator-v4.js'], (req, res) => {
+    res.sendFile(path.resolve(process.cwd(), 'src/views/simulator-v4.js'));
 });
 
 /**
