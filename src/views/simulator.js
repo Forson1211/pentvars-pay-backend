@@ -149,6 +149,17 @@ async function initiateUSSDCall() {
     const dialDisplay = display ? display.textContent.trim() : '';
     if (!dialDisplay) return;
     
+    // Read custom SIM phone number from settings
+    const simPhoneInput = document.getElementById('sim-phone');
+    let rawPhone = simPhoneInput ? simPhoneInput.value.trim() : '0244123456';
+    if (rawPhone.startsWith('0')) {
+        phoneNumber = '+233' + rawPhone.substring(1);
+    } else if (rawPhone.startsWith('+')) {
+        phoneNumber = rawPhone;
+    } else {
+        phoneNumber = '+233' + rawPhone;
+    }
+    
     serviceCode = dialDisplay;
     activeSessionId = 'sim-' + Math.floor(Math.random() * 100000000);
     textState = '';
