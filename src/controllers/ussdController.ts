@@ -964,11 +964,28 @@ async function processUSSDMoMoPayment(sessionId: string, session: USSDSession, i
             `No prompt? Dial *170# > My Wallet > Approvals.`,
         ].join('\n'));
 
-        // ── Fire Paystack charge AFTER session ends (asynchronously) ──
-        // The phone line is now free to receive the MTN/Telecel push notification.
-        setImmediate(async () => {
+        // ── Fire Paystack charge AFTER 5-second delay ──
+        // The END response is sent to Arkesel → MTN closes the USSD session on the phone.
+        // We wait 5 seconds so MTN fully processes the session closure before we
+        // ask them to open a NEW USSD push channel for the MoMo PIN prompt.
+        // (setImmediate fired < 1ms after response — MTN hadn't cleared the session yet)
+        const chargeDelayMs = 5000;
+        console.log(`[USSD] Waiting ${chargeDelayMs}ms for MTN to clear USSD session before charging...`);
+
+        setTimeout(async () => {
             try {
-                console.log(`[USSD] Async: sending charge to Paystack now (ref: ${reference})`);
+                // Minimum amount guard — Paystack rejects amounts below GHS 0.50
+                const MIN_AMOUNT_GHS = 0.50;
+                if ((session.amount ?? 0) < MIN_AMOUNT_GHS) {
+                    console.error(`[USSD] Amount GHS ${session.amount} is below Paystack minimum of GHS ${MIN_AMOUNT_GHS}. Aborting charge. ref: ${reference}`);
+                    await Transaction.findByIdAndUpdate(transaction.id, {
+                        status: 'failed',
+                        description: `Amount GHS ${session.amount} too small (minimum GHS ${MIN_AMOUNT_GHS})`,
+                    }).catch(console.error);
+                    return;
+                }
+
+                console.log(`[USSD] Sending charge to Paystack: phone=${localPhone} network=${session.mobileNetwork} amount=${session.amount} ref=${reference}`);
                 const chargeResult = await PaystackService.chargeMobileMoney(
                     session.amount!,
                     student.email,
@@ -983,7 +1000,7 @@ async function processUSSDMoMoPayment(sessionId: string, session: USSDSession, i
                 console.log(`[USSD] Charge status: ${chargeDataStatus} | phone: ${localPhone} | network: ${session.mobileNetwork} | ref: ${reference}`);
 
                 if (!chargeResult?.status) {
-                    console.error(`[USSD] Charge failed for ref ${reference}:`, chargeResult?.message);
+                    console.error(`[USSD] Charge failed for ref ${reference}: ${chargeResult?.message}`);
                     await Transaction.findByIdAndUpdate(transaction.id, {
                         status: 'failed',
                         description: chargeResult?.message || 'Paystack charge failed',
@@ -1002,7 +1019,7 @@ async function processUSSDMoMoPayment(sessionId: string, session: USSDSession, i
                     isError: false,
                 }).catch(console.error);
 
-                console.log(`[USSD] MoMo prompt sent to customer's phone. Awaiting PIN confirmation. ref: ${reference}`);
+                console.log(`[USSD] ✅ MoMo push sent. Customer should now see PIN prompt. status=${chargeDataStatus} ref=${reference}`);
             } catch (asyncError: any) {
                 console.error(`[USSD] Async charge error for ref ${reference}:`, asyncError.message);
                 await Transaction.findByIdAndUpdate(transaction.id, {
@@ -1010,7 +1027,7 @@ async function processUSSDMoMoPayment(sessionId: string, session: USSDSession, i
                     description: asyncError.message,
                 }).catch(console.error);
             }
-        });
+        }, chargeDelayMs);
 
     } catch (error: any) {
         console.error('[USSD] MoMo payment setup error:', error);
