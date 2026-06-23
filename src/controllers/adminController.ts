@@ -736,3 +736,105 @@ export const clearAuditLogs = async (req: Request, res: Response, next: NextFunc
         next(error);
     }
 };
+
+/**
+ * POST /api/admin/students
+ * Admin: Register a new student with a generated temporal password
+ */
+export const createStudent = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+        const { email, firstName, lastName, studentId, phone, programme, level, stream, nationality } = req.body;
+
+        if (!email || !firstName || !lastName || !studentId) {
+            res.status(400).json({ message: 'Email, First Name, Last Name, and Student ID are required.' });
+            return;
+        }
+
+        // Check if user already exists (by email or student ID case-insensitively)
+        const existingUser = await User.findOne({
+            $or: [
+                { email: email.toLowerCase() },
+                { studentId: { $regex: new RegExp('^' + studentId.trim().replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&') + '$', 'i') } }
+            ],
+        });
+
+        if (existingUser) {
+            res.status(400).json({ message: 'User with this email or student ID already exists.' });
+            return;
+        }
+
+        // Generate temporal password: PV-<cleanStudentID> or custom body password
+        let temporalPassword = req.body.password;
+        if (!temporalPassword) {
+            const cleanId = studentId.trim().replace(/[^a-zA-Z0-9]/g, '');
+            temporalPassword = `PV-${cleanId || Math.random().toString(36).substring(2, 8).toUpperCase()}`;
+        }
+
+        const initialLevelStr = level || '100';
+        const initialLevelNum = parseInt(initialLevelStr) || 100;
+
+        const student = await User.create({
+            email: email.toLowerCase(),
+            password: temporalPassword,
+            firstName,
+            lastName,
+            role: 'student',
+            studentId: studentId.trim(),
+            phone,
+            programme,
+            level: initialLevelStr,
+            currentLevel: initialLevelNum,
+            entryLevel: initialLevelNum,
+            graduationLevel: 400,
+            stream: stream || 'regular',
+            nationality: nationality || 'ghanaian',
+            status: 'active',
+        });
+
+        // Assign active academic year and resolve Programme Reference
+        try {
+            const activeYear = await FeeCalculationService.getActiveAcademicYear();
+            if (activeYear) {
+                student.currentAcademicYear = activeYear._id;
+            }
+
+            const programmeId = await FeeCalculationService.resolveProgrammeId(student as any);
+            if (programmeId) {
+                student.programmeRef = programmeId;
+            }
+
+            await student.save();
+
+            // Assign Applicable Global Fees (Exams, Dues, etc.)
+            await FeeCalculationService.assignApplicableGlobalFees(student as any);
+        } catch (progError) {
+            console.error('Error resolving references or assigning fees during admin registration:', progError);
+        }
+
+        // Create audit log
+        AuditLog.create({
+            action: 'student_created',
+            details: {
+                adminId: req.user?.id,
+                adminName: `${req.user?.firstName} ${req.user?.lastName}`,
+                studentDbId: student.id,
+                studentId: student.studentId,
+                studentName: `${firstName} ${lastName}`,
+                email: email.toLowerCase(),
+                temporalPassword,
+            },
+            isError: false,
+        }).catch(console.error);
+
+        const studentObj = student.toJSON();
+
+        res.status(201).json({
+            message: 'Student registered successfully.',
+            student: studentObj,
+            temporalPassword,
+        });
+    } catch (error) {
+        next(error);
+    }
+};
+

@@ -23,7 +23,8 @@ export type AuditAction =
     | 'staff_deleted'
     | 'staff_role_changed'
     | 'staff_status_changed'
-    | 'student_promoted';
+    | 'student_promoted'
+    | 'student_created';
 
 export interface IAuditLog extends Document {
     action: AuditAction;

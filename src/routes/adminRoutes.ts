@@ -43,7 +43,7 @@ import {
     getFacultiesForReport,
     exportClearancePDF,
 } from '../controllers/reportController';
-import { getAdminHierarchy, createStaff, getAdvancedStats, impersonateUser, updateStaff, deleteStaff, toggleHostelStatus, resetAllStudentFees, getAuditLogs, deleteAuditLog, clearAuditLogs } from '../controllers/adminController';
+import { getAdminHierarchy, createStaff, createStudent, getAdvancedStats, impersonateUser, updateStaff, deleteStaff, toggleHostelStatus, resetAllStudentFees, getAuditLogs, deleteAuditLog, clearAuditLogs } from '../controllers/adminController';
 import { previewPromotion, promoteStudents } from '../controllers/promotionController';
 import { authenticate, authorize } from '../middleware/auth';
 import { Request, Response, NextFunction } from 'express';
@@ -98,6 +98,7 @@ router.get('/payments', getPaymentList);
 
 // ──── Student Management ────
 router.get('/students', getAllStudentsWithBalance);
+router.post('/students', createStudent);
 router.get('/students/:id', getStudentDetails);
 router.get('/promotion-preview', previewPromotion);
 router.post('/promote-students', promoteStudents);

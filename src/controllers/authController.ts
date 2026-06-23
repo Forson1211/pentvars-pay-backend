@@ -114,13 +114,24 @@ export const register = async (req: Request, res: Response, next: NextFunction):
  */
 export const login = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
-        const { email, password } = req.body;
+        const { email, studentId, username, identifier, password } = req.body;
+        const loginValue = (email || studentId || username || identifier || '').trim();
 
-        // Find user and include password for comparison
-        const user = await User.findOne({ email: email.toLowerCase() }).select('+password');
+        if (!loginValue) {
+            res.status(400).json({ message: 'Email or Student ID is required.' });
+            return;
+        }
+
+        // Find user by email OR studentId (case-insensitive)
+        const user = await User.findOne({
+            $or: [
+                { email: loginValue.toLowerCase() },
+                { studentId: { $regex: new RegExp('^' + loginValue.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&') + '$', 'i') } }
+            ]
+        }).select('+password');
 
         if (!user) {
-            res.status(401).json({ message: 'Invalid email or password.' });
+            res.status(401).json({ message: 'Invalid credentials.' });
             return;
         }
 
