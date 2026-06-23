@@ -40,6 +40,8 @@ import {
     getStudentDetails,
     getStudentCountByGroups,
     getPaymentList,
+    getFacultiesForReport,
+    exportClearancePDF,
 } from '../controllers/reportController';
 import { getAdminHierarchy, createStaff, getAdvancedStats, impersonateUser, updateStaff, deleteStaff, toggleHostelStatus, resetAllStudentFees, getAuditLogs, deleteAuditLog, clearAuditLogs } from '../controllers/adminController';
 import { previewPromotion, promoteStudents } from '../controllers/promotionController';
@@ -89,6 +91,8 @@ router.get('/reports/revenue', getRevenueReport);
 router.get('/reports/outstanding', getOutstandingReport);
 router.get('/reports/export-csv', exportOutstandingCSV);
 router.get('/reports/dashboard-summary', getAdminDashboardSummary);
+router.get('/reports/faculties', getFacultiesForReport);
+router.get('/reports/clearance-pdf', exportClearancePDF);
 router.get('/students/count', getStudentCountByGroups);
 router.get('/payments', getPaymentList);
 

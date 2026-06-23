@@ -22,13 +22,19 @@ export const authenticate = async (
     next: NextFunction
 ): Promise<void> => {
     try {
+        let token: string | undefined;
         const authHeader = req.headers.authorization;
-        if (!authHeader || !authHeader.startsWith('Bearer ')) {
+        if (authHeader && authHeader.startsWith('Bearer ')) {
+            token = authHeader.split(' ')[1];
+        } else if (req.query.token) {
+            token = req.query.token as string;
+        }
+
+        if (!token) {
             res.status(401).json({ message: 'Access denied. No token provided.' });
             return;
         }
 
-        const token = authHeader.split(' ')[1];
         const decoded = jwt.verify(token, config.jwt.secret) as { id: string; role: string };
 
         const user = await User.findById(decoded.id);

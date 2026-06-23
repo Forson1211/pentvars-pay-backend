@@ -5,7 +5,10 @@ import { Transaction } from '../models/Transaction';
 import { User } from '../models/User';
 import { FeeTemplate } from '../models/FeeTemplate';
 import { AcademicYear } from '../models/AcademicYear';
+import { Faculty } from '../models/Faculty';
+import { Programme } from '../models/Programme';
 import mongoose from 'mongoose';
+import PDFDocument from 'pdfkit';
 
 /**
  * GET /api/admin/reports/revenue
@@ -876,6 +879,292 @@ export const getStudentDetails = async (req: Request, res: Response, next: NextF
                 description: p.description,
             })),
         });
+    } catch (error) {
+        next(error);
+    }
+};
+
+/**
+ * GET /api/admin/reports/faculties
+ * Admin: Get all active faculties for the clearance list selector
+ */
+export const getFacultiesForReport = async (_req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+        const faculties = await Faculty.find({ isActive: true }).sort({ name: 1 }).lean();
+        res.json({ faculties: faculties.map(f => ({ id: f._id, name: f.name, code: f.code })) });
+    } catch (error) {
+        next(error);
+    }
+};
+
+/**
+ * GET /api/admin/reports/clearance-pdf
+ * Admin: Generate PDF clearance list of fully-paid students, grouped by faculty.
+ * Query params:
+ *   - facultyId  (optional) – filter to a single faculty; omit for ALL faculties
+ *   - academicYearId (optional) – filter by academic year; defaults to active year
+ *   - semester (optional, 1 or 2) – filter by semester; omit for all semesters
+ */
+export const exportClearancePDF = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+        const { facultyId, academicYearId, semester } = req.query;
+
+        // Resolve academic year
+        let academicYear: any;
+        if (academicYearId) {
+            academicYear = await AcademicYear.findById(academicYearId).lean();
+        } else {
+            academicYear = await AcademicYear.findOne({ isActive: true }).lean();
+        }
+        if (!academicYear) {
+            res.status(404).json({ message: 'No academic year found. Please create and activate an academic year first.' });
+            return;
+        }
+
+        // Build StudentFee match stage – only fully paid records
+        const feeMatch: any = {
+            academicYear: academicYear._id,
+            status: 'paid',
+        };
+        if (semester) feeMatch.semester = parseInt(semester as string);
+
+        // Aggregate: paid student fees → student info → programme → faculty
+        const pipeline: any[] = [
+            { $match: feeMatch },
+            // Join student user
+            {
+                $lookup: {
+                    from: 'users',
+                    localField: 'student',
+                    foreignField: '_id',
+                    as: 'user',
+                },
+            },
+            { $unwind: '$user' },
+            // Join fee template for programme/faculty
+            {
+                $lookup: {
+                    from: 'feetemplates',
+                    localField: 'feeTemplate',
+                    foreignField: '_id',
+                    as: 'template',
+                },
+            },
+            { $unwind: { path: '$template', preserveNullAndEmptyArrays: true } },
+            // Join programme
+            {
+                $lookup: {
+                    from: 'programmes',
+                    localField: 'template.programme',
+                    foreignField: '_id',
+                    as: 'programme',
+                },
+            },
+            { $unwind: { path: '$programme', preserveNullAndEmptyArrays: true } },
+            // Join faculty via template.faculty (more reliable than programme.faculty)
+            {
+                $lookup: {
+                    from: 'faculties',
+                    localField: 'template.faculty',
+                    foreignField: '_id',
+                    as: 'faculty',
+                },
+            },
+            { $unwind: { path: '$faculty', preserveNullAndEmptyArrays: true } },
+        ];
+
+        // Filter by faculty if requested
+        if (facultyId) {
+            pipeline.push({
+                $match: { 'faculty._id': new mongoose.Types.ObjectId(facultyId as string) },
+            });
+        }
+
+        pipeline.push({
+            $project: {
+                studentId: '$user.studentId',
+                firstName: '$user.firstName',
+                lastName: '$user.lastName',
+                stream: '$user.stream',
+                level: '$user.level',
+                programmeName: { $ifNull: ['$programme.programmeName', '$user.programme'] },
+                facultyName: { $ifNull: ['$faculty.name', 'General'] },
+                facultyId: '$faculty._id',
+                semester: 1,
+                amountPaid: 1,
+            },
+        });
+
+        pipeline.push({ $sort: { facultyName: 1, programmeName: 1, level: 1, lastName: 1, firstName: 1 } });
+
+        const records: any[] = await StudentFee.aggregate(pipeline);
+
+        if (records.length === 0) {
+            res.status(404).json({ message: 'No fully paid students found for the selected filters.' });
+            return;
+        }
+
+        // ── Build PDF ─────────────────────────────────────────────────────────
+        const doc = new PDFDocument({ margin: 36, size: 'A4', layout: 'landscape' });
+
+        res.setHeader('Content-Type', 'application/pdf');
+        const semLabel = semester ? `Semester ${semester}` : 'All Semesters';
+        const safeYear = academicYear.yearLabel.replace(/\//g, '-');
+        const filename = facultyId
+            ? `clearance-list-${safeYear}-sem${semester || 'all'}.pdf`
+            : `clearance-list-ALL-FACULTIES-${safeYear}.pdf`;
+        res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+        doc.pipe(res);
+
+        // Group records by faculty
+        const grouped = new Map<string, any[]>();
+        for (const r of records) {
+            const key = r.facultyName || 'General';
+            if (!grouped.has(key)) grouped.set(key, []);
+            grouped.get(key)!.push(r);
+        }
+
+        let isFirstSection = true;
+
+        for (const [facultyName, students] of grouped) {
+            if (!isFirstSection) doc.addPage();
+            isFirstSection = false;
+
+            // ── Page Header ─────────────────────────────────────────────────
+            const pageWidth = doc.page.width - 72; // account for 36pt margins each side
+
+            // Logo placeholder area (university seal feel)
+            doc.rect(36, 36, 60, 60).lineWidth(1).stroke('#4A3A8A');
+            doc.fontSize(7).fillColor('#4A3A8A')
+                .text('PENTVARS', 37, 52, { width: 58, align: 'center' })
+                .text('UNIVERSITY', 37, 61, { width: 58, align: 'center' });
+
+            // University name block
+            doc.fontSize(14).font('Helvetica-Bold').fillColor('#1a1a2e')
+                .text('PENTECOST UNIVERSITY', 100, 36, { width: pageWidth - 64, align: 'center' });
+            doc.fontSize(9).font('Helvetica').fillColor('#555')
+                .text('P.O. Box KN 1739, Kaneshie – Accra, Ghana', 100, 54, { width: pageWidth - 64, align: 'center' })
+                .text('Tel: +233 (0) 302 – 304167 | www.pentvars.edu.gh', 100, 65, { width: pageWidth - 64, align: 'center' });
+
+            // Report title
+            doc.moveDown(0.2);
+            doc.fontSize(12).font('Helvetica-Bold').fillColor('#4A3A8A')
+                .text(`PRELIMINARY 100% CLEARED LIST`, 36, 100, { align: 'center', width: pageWidth });
+
+            doc.fontSize(9).font('Helvetica').fillColor('#333')
+                .text(`Academic Year: ${academicYear.yearLabel}   |   ${semLabel}`, 36, 116, { align: 'center', width: pageWidth });
+            doc.fontSize(10).font('Helvetica-Bold').fillColor('#1a1a2e')
+                .text(`Faculty: ${facultyName.toUpperCase()}`, 36, 130, { align: 'center', width: pageWidth });
+
+            // Separator line
+            doc.moveTo(36, 148).lineTo(36 + pageWidth, 148).lineWidth(1.5).strokeColor('#4A3A8A').stroke();
+            doc.moveTo(36, 151).lineTo(36 + pageWidth, 151).lineWidth(0.5).strokeColor('#4A3A8A').stroke();
+
+            // ── Table Header ────────────────────────────────────────────────
+            const colX = {
+                no:        36,
+                admNo:     70,
+                name:      155,
+                year:      330,
+                semester:  405,
+                programme: 445,
+                level:     575,
+                session:   615,
+                remark:    660,
+            };
+            const tableTop = 160;
+            const rowHeight = 18;
+            const headerH  = 20;
+
+            // Header background
+            doc.rect(36, tableTop, pageWidth, headerH).fill('#4A3A8A');
+
+            const headers = ['NO', 'ADM NO', 'STUDENT NAME', 'ACADEMIC YEAR', 'SEM', 'PROGRAMME', 'LEVEL', 'SESSION', 'REMARK'];
+            const colKeys = Object.values(colX);
+            const colWidths = [
+                34, 85, 175, 75, 40, 130, 40, 45, (36 + pageWidth) - 660,
+            ];
+
+            doc.font('Helvetica-Bold').fontSize(7).fillColor('#FFFFFF');
+            headers.forEach((h, i) => {
+                doc.text(h, colKeys[i] + 2, tableTop + 6, { width: colWidths[i] - 4, align: 'center' });
+            });
+
+            // ── Table Rows ───────────────────────────────────────────────────
+            let y = tableTop + headerH;
+
+            students.forEach((s, idx) => {
+                // Alternate row shading
+                if (idx % 2 === 0) {
+                    doc.rect(36, y, pageWidth, rowHeight).fill('#F5F3FF');
+                } else {
+                    doc.rect(36, y, pageWidth, rowHeight).fill('#FFFFFF');
+                }
+
+                // Row border
+                doc.rect(36, y, pageWidth, rowHeight).lineWidth(0.3).strokeColor('#D0C8F0').stroke();
+
+                const sessionLabel = s.stream === 'weekend' ? 'Weekend' : 'Regular';
+                const rowData = [
+                    String(idx + 1),
+                    s.studentId || 'N/A',
+                    `${(s.lastName || '').toUpperCase()}, ${s.firstName || ''}`,
+                    academicYear.yearLabel,
+                    String(s.semester),
+                    s.programmeName || 'N/A',
+                    s.level ? `${s.level}` : 'N/A',
+                    sessionLabel,
+                    'CLEARED',
+                ];
+
+                doc.font('Helvetica').fontSize(6.5).fillColor('#1a1a2e');
+                rowData.forEach((cell, i) => {
+                    const isName = i === 2;
+                    const isRemark = i === 8;
+                    doc.fillColor(isRemark ? '#10b981' : '#1a1a2e')
+                        .font(isRemark ? 'Helvetica-Bold' : 'Helvetica')
+                        .text(cell, colKeys[i] + 2, y + 5, {
+                            width: colWidths[i] - 4,
+                            align: isName ? 'left' : 'center',
+                            lineBreak: false,
+                        });
+                });
+
+                y += rowHeight;
+
+                // Add new page if needed
+                if (y > doc.page.height - 60) {
+                    doc.addPage();
+                    y = 36;
+                    // Repeat header on new page
+                    doc.rect(36, y, pageWidth, headerH).fill('#4A3A8A');
+                    doc.font('Helvetica-Bold').fontSize(7).fillColor('#FFFFFF');
+                    headers.forEach((h, i) => {
+                        doc.text(h, colKeys[i] + 2, y + 6, { width: colWidths[i] - 4, align: 'center' });
+                    });
+                    y += headerH;
+                }
+            });
+
+            // ── Footer ───────────────────────────────────────────────────────
+            const footerY = Math.min(y + 16, doc.page.height - 50);
+            doc.moveTo(36, footerY).lineTo(36 + pageWidth, footerY).lineWidth(0.8).strokeColor('#4A3A8A').stroke();
+            doc.fontSize(7).font('Helvetica').fillColor('#666')
+                .text(`Total Students Cleared: ${students.length}`, 36, footerY + 6, { align: 'left', width: pageWidth / 2 })
+                .text(`Generated: ${new Date().toLocaleString('en-GH', { dateStyle: 'long', timeStyle: 'short' })}`, 36, footerY + 6, { align: 'right', width: pageWidth });
+
+            // Signature lines
+            const sigY = footerY + 22;
+            if (sigY + 30 < doc.page.height) {
+                doc.fontSize(7).font('Helvetica')
+                    .text('______________________', 60, sigY)
+                    .text('Bursar / Accountant', 60, sigY + 12, { width: 120, align: 'center' })
+                    .text('______________________', 36 + pageWidth - 180, sigY)
+                    .text('Registrar', 36 + pageWidth - 180, sigY + 12, { width: 120, align: 'center' });
+            }
+        }
+
+        doc.end();
     } catch (error) {
         next(error);
     }

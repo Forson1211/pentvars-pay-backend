@@ -365,45 +365,49 @@ export const handleUSSDSession = async (req: Request, res: Response): Promise<vo
                 const dataStatus = otpResult?.data?.status;
 
                 if (dataStatus === 'success') {
-                    // ── 1. Update DB, ledger, sockets — same as webhook ──────
+                    // ── 1. Update DB, ledger, sockets ──────
                     const txn = await Transaction.findOne({ reference: pendingRef });
                     if (txn) {
                         await finalizePaymentSuccess(
                             txn,
                             new Date(),
                             otpResult.data?.id?.toString() || pendingRef,
-                            session.amount!,
+                            session.amount || txn.amount || txn.amountExpected || 0,
                             'mobile_money',
                             'OTP Verified via USSD'
                         );
                     }
 
-                    // ── 2. Fetch student's updated balance for display ───────
+                    // ── 2. Resolve parameters from session or txn ──────
+                    const studentDbId = session.studentDbId || txn?.studentId;
+                    const studentFeeId = session.studentFeeId || txn?.studentFeeId;
+                    const feeItemId = session.feeItemId || txn?.feeItemId;
+                    const amountPaid = session.amount || txn?.amount || txn?.amountExpected || 0;
+
                     let studentName = session.studentId || 'Student';
-                    let newBalance = 0;
+                    let studentId = session.studentId || '';
                     let feeSummary = '';
 
                     try {
-                        const student = await User.findById(session.studentDbId)
-                            .select('firstName lastName');
+                        const student = await User.findById(studentDbId).select('firstName lastName studentId');
                         if (student) {
                             studentName = `${student.firstName} ${student.lastName}`;
+                            studentId = String(student.studentId ?? '');
                         }
 
-                        // Get updated academic fee balance
-                        if (session.studentFeeId) {
-                            const updatedFee = await StudentFee.findById(session.studentFeeId)
+                        if (studentFeeId) {
+                            const updatedFee = await StudentFee.findById(studentFeeId)
                                 .select('balance amountPaid totalAmount status');
                             if (updatedFee) {
-                                newBalance = updatedFee.balance;
+                                const newBalance = updatedFee.balance;
                                 const isPaid = updatedFee.status === 'paid' || newBalance <= 0;
                                 feeSummary = `Balance: GHS ${newBalance.toFixed(2)}${isPaid ? ' (FULLY PAID)' : ''}`;
                             }
-                        } else if (session.feeItemId) {
-                            const updatedItem = await FeeItem.findById(session.feeItemId)
+                        } else if (feeItemId) {
+                            const updatedItem = await FeeItem.findById(feeItemId)
                                 .select('balance amountPaid totalAmount status');
                             if (updatedItem) {
-                                newBalance = updatedItem.balance;
+                                const newBalance = updatedItem.balance;
                                 const isPaid = updatedItem.status === 'paid' || newBalance <= 0;
                                 feeSummary = `Balance: GHS ${newBalance.toFixed(2)}${isPaid ? ' (FULLY PAID)' : ''}`;
                             }
@@ -416,16 +420,14 @@ export const handleUSSDSession = async (req: Request, res: Response): Promise<vo
                     sendUSSD(res, [
                         `END PAYMENT SUCCESSFUL`,
                         `Name: ${studentName}`,
-                        `ID: ${session.studentId}`,
-                        `Paid: GHS ${session.amount?.toFixed(2)}`,
+                        `ID: ${studentId}`,
+                        `Paid: GHS ${amountPaid.toFixed(2)}`,
                         feeSummary,
                         `Ref: ${pendingRef}`,
                         `Thank you!`,
                     ].filter(Boolean).join('\n'));
 
                 } else if (dataStatus === 'pay_offline' || dataStatus === 'pending') {
-                    // Network will send a MoMo push prompt — no OTP needed, payment pending
-                    // Webhook will finalize it when the user approves on their phone
                     sendUSSD(res, [
                         `END OTP accepted!`,
                         `Approve the MoMo prompt on your phone to complete payment.`,
@@ -449,50 +451,60 @@ export const handleUSSDSession = async (req: Request, res: Response): Promise<vo
 
             if (lastInput === '1') {
                 try {
-                    const verifyResult = await PaystackService.verifyTransaction(pendingRef);
-                    console.log('[USSD] MoMo status check result:', JSON.stringify(verifyResult));
+                    // Check local DB first in case webhook succeeded very fast
+                    const txn = await Transaction.findOne({ reference: pendingRef });
+                    let status = 'pending';
 
-                    const status = verifyResult?.data?.status;
+                    if (txn && txn.status === 'completed') {
+                        status = 'success';
+                    } else {
+                        const verifyResult = await PaystackService.verifyTransaction(pendingRef);
+                        console.log('[USSD] MoMo status check result:', JSON.stringify(verifyResult));
+                        status = verifyResult?.data?.status || 'pending';
 
-                    if (status === 'success') {
-                        // ── 1. Update DB, ledger, sockets ──────
-                        const txn = await Transaction.findOne({ reference: pendingRef });
-                        if (txn) {
+                        if (status === 'success' && txn) {
                             await finalizePaymentSuccess(
                                 txn,
-                                new Date(),
+                                new Date(verifyResult.data?.paid_at || Date.now()),
                                 verifyResult.data?.id?.toString() || pendingRef,
-                                session.amount!,
+                                session.amount || txn.amount || txn.amountExpected || 0,
                                 'mobile_money',
                                 'MoMo Verified via USSD Menu'
                             );
                         }
+                    }
 
-                        // ── 2. Fetch student's updated balance ───────
+                    if (status === 'success') {
+                        // ── 2. Resolve parameters from session or txn ──────
+                        const studentDbId = session.studentDbId || txn?.studentId;
+                        const studentFeeId = session.studentFeeId || txn?.studentFeeId;
+                        const feeItemId = session.feeItemId || txn?.feeItemId;
+                        const amountPaid = session.amount || txn?.amount || txn?.amountExpected || 0;
+
                         let studentName = session.studentId || 'Student';
-                        let newBalance = 0;
+                        let studentId = session.studentId || '';
                         let feeSummary = '';
 
                         try {
-                            const student = await User.findById(session.studentDbId)
-                                .select('firstName lastName');
+                            const student = await User.findById(studentDbId).select('firstName lastName studentId');
                             if (student) {
                                 studentName = `${student.firstName} ${student.lastName}`;
+                                studentId = String(student.studentId ?? '');
                             }
 
-                            if (session.studentFeeId) {
-                                const updatedFee = await StudentFee.findById(session.studentFeeId)
+                            if (studentFeeId) {
+                                const updatedFee = await StudentFee.findById(studentFeeId)
                                     .select('balance amountPaid totalAmount status');
                                 if (updatedFee) {
-                                    newBalance = updatedFee.balance;
+                                    const newBalance = updatedFee.balance;
                                     const isPaid = updatedFee.status === 'paid' || newBalance <= 0;
                                     feeSummary = `Balance: GHS ${newBalance.toFixed(2)}${isPaid ? ' (FULLY PAID)' : ''}`;
                                 }
-                            } else if (session.feeItemId) {
-                                const updatedItem = await FeeItem.findById(session.feeItemId)
+                            } else if (feeItemId) {
+                                const updatedItem = await FeeItem.findById(feeItemId)
                                     .select('balance amountPaid totalAmount status');
                                 if (updatedItem) {
-                                    newBalance = updatedItem.balance;
+                                    const newBalance = updatedItem.balance;
                                     const isPaid = updatedItem.status === 'paid' || newBalance <= 0;
                                     feeSummary = `Balance: GHS ${newBalance.toFixed(2)}${isPaid ? ' (FULLY PAID)' : ''}`;
                                 }
@@ -505,8 +517,8 @@ export const handleUSSDSession = async (req: Request, res: Response): Promise<vo
                         sendUSSD(res, [
                             `END PAYMENT SUCCESSFUL`,
                             `Name: ${studentName}`,
-                            `ID: ${session.studentId}`,
-                            `Paid: GHS ${session.amount?.toFixed(2)}`,
+                            `ID: ${studentId}`,
+                            `Paid: GHS ${amountPaid.toFixed(2)}`,
                             feeSummary,
                             `Ref: ${pendingRef}`,
                             `Thank you!`,
