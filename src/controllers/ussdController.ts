@@ -363,25 +363,84 @@ export const handleUSSDSession = async (req: Request, res: Response): Promise<vo
                 console.log('[USSD] OTP submit result:', JSON.stringify(otpResult));
 
                 const dataStatus = otpResult?.data?.status;
+
                 if (dataStatus === 'success') {
+                    // ── 1. Update DB, ledger, sockets — same as webhook ──────
+                    const txn = await Transaction.findOne({ reference: pendingRef });
+                    if (txn) {
+                        await finalizePaymentSuccess(
+                            txn,
+                            new Date(),
+                            otpResult.data?.id?.toString() || pendingRef,
+                            session.amount!,
+                            'mobile_money',
+                            'OTP Verified via USSD'
+                        );
+                    }
+
+                    // ── 2. Fetch student's updated balance for display ───────
+                    let studentName = session.studentId || 'Student';
+                    let newBalance = 0;
+                    let feeSummary = '';
+
+                    try {
+                        const student = await User.findById(session.studentDbId)
+                            .select('firstName lastName');
+                        if (student) {
+                            studentName = `${student.firstName} ${student.lastName}`;
+                        }
+
+                        // Get updated academic fee balance
+                        if (session.studentFeeId) {
+                            const updatedFee = await StudentFee.findById(session.studentFeeId)
+                                .select('balance amountPaid totalAmount status');
+                            if (updatedFee) {
+                                newBalance = updatedFee.balance;
+                                feeSummary = updatedFee.status === 'paid'
+                                    ? 'FULLY PAID'
+                                    : `Balance: GHS ${newBalance.toFixed(2)}`;
+                            }
+                        } else if (session.feeItemId) {
+                            const updatedItem = await FeeItem.findById(session.feeItemId)
+                                .select('balance amountPaid totalAmount status');
+                            if (updatedItem) {
+                                newBalance = updatedItem.balance;
+                                feeSummary = updatedItem.status === 'paid'
+                                    ? 'FULLY PAID'
+                                    : `Balance: GHS ${newBalance.toFixed(2)}`;
+                            }
+                        }
+                    } catch (fetchErr) {
+                        console.error('[USSD] Balance fetch error after OTP:', fetchErr);
+                    }
+
+                    // ── 3. Send rich success message ─────────────────────────
                     sendUSSD(res, [
-                        `END Payment Successful!`,
-                        `Amount: GHS ${session.amount?.toFixed(2)}`,
+                        `END PAYMENT SUCCESSFUL`,
+                        `Name: ${studentName}`,
+                        `ID: ${session.studentId}`,
+                        `Paid: GHS ${session.amount?.toFixed(2)}`,
+                        feeSummary,
                         `Ref: ${pendingRef}`,
                         `Thank you!`,
-                    ].join('\n'));
+                    ].filter(Boolean).join('\n'));
+
                 } else if (dataStatus === 'pay_offline' || dataStatus === 'pending') {
+                    // Network will send a MoMo push prompt — no OTP needed, payment pending
+                    // Webhook will finalize it when the user approves on their phone
                     sendUSSD(res, [
-                        `END OTP accepted. Approve the MoMo prompt on your phone.`,
+                        `END OTP accepted!`,
+                        `Approve the MoMo prompt on your phone to complete payment.`,
                         `Ref: ${pendingRef}`,
-                        `You will receive an SMS confirmation.`,
+                        `You will receive an SMS confirmation once approved.`,
                     ].join('\n'));
+
                 } else {
-                    sendUSSD(res, `END OTP verification failed: ${otpResult?.message || 'Unknown error'}. Please try again.`);
+                    sendUSSD(res, `END OTP verification failed: ${otpResult?.message || 'Unknown error'}. Please dial *928*347# and try again.`);
                 }
             } catch (err: any) {
                 console.error('[USSD] OTP submit error:', err);
-                sendUSSD(res, `END OTP error: ${err.message}. Please try again.`);
+                sendUSSD(res, `END OTP error. Please dial *928*347# and try again.`);
             }
             return;
         }
