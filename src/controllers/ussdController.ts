@@ -49,8 +49,40 @@ setInterval(() => {
  * The message MUST already include the CON/END prefix.
  */
 function sendUSSD(res: Response, message: string): void {
-    res.set('Content-Type', 'text/plain');
-    res.send(message);
+    const req = res.req as Request | undefined;
+    const isArkesel = !!(req && req.body && (
+        req.body.msisdn !== undefined || 
+        req.body.sessionID !== undefined || 
+        req.body.userData !== undefined || 
+        req.body.userID !== undefined
+    ));
+
+    if (isArkesel && req) {
+        let continueSession = true;
+        let cleanMessage = message;
+
+        if (message.startsWith('CON ')) {
+            continueSession = true;
+            cleanMessage = message.substring(4);
+        } else if (message.startsWith('END ')) {
+            continueSession = false;
+            cleanMessage = message.substring(4);
+        } else {
+            continueSession = false;
+        }
+
+        res.set('Content-Type', 'application/json');
+        res.json({
+            sessionID: req.body.sessionID || req.body.sessionId || '',
+            userID: req.body.userID || '',
+            msisdn: req.body.msisdn || req.body.phoneNumber || '',
+            message: cleanMessage,
+            continueSession: continueSession
+        });
+    } else {
+        res.set('Content-Type', 'text/plain');
+        res.send(message);
+    }
 }
 
 /**
@@ -74,7 +106,32 @@ function sendUSSD(res: Response, message: string): void {
  * 5. Check Balance
  */
 export const handleUSSDSession = async (req: Request, res: Response): Promise<void> => {
-    const { sessionId, serviceCode, phoneNumber, text } = req.body;
+    // Extract fields, supporting both Africa's Talking / Simulator and Arkesel formats
+    const sessionID = req.body.sessionID || req.body.sessionId;
+    const msisdn = req.body.msisdn || req.body.phoneNumber;
+    const userDataRaw = req.body.userData !== undefined ? req.body.userData : req.body.text;
+    const userData = userDataRaw !== undefined && userDataRaw !== null ? String(userDataRaw) : null;
+    const serviceCodeRaw = req.body.serviceCode;
+    const serviceCode = serviceCodeRaw !== undefined && serviceCodeRaw !== null ? String(serviceCodeRaw) : undefined;
+    const newSession = req.body.newSession;
+    const type = req.body.type;
+
+    // Detect if this is the start of a session
+    const isInitialRequest = 
+        newSession === true || 
+        newSession === 'true' || 
+        type === 'initiation' ||
+        userData === null ||
+        userData === '' || 
+        (typeof userData === 'string' && userData.startsWith('*') && userData.endsWith('#'));
+
+    const resolvedSessionId = sessionID ? String(sessionID) : undefined;
+    const resolvedPhoneNumber = msisdn ? String(msisdn) : undefined;
+    const resolvedText = isInitialRequest ? '' : (userData || '');
+
+    const sessionId = resolvedSessionId;
+    const phoneNumber = resolvedPhoneNumber;
+    const text = resolvedText;
 
     if (!sessionId || !phoneNumber) {
         sendUSSD(res, 'END Invalid request. Please try again.');
@@ -85,12 +142,16 @@ export const handleUSSDSession = async (req: Request, res: Response): Promise<vo
     // Only accept requests for the officially purchased USSD code *928*347#.
     // Reject any other service code immediately.
     const ALLOWED_SERVICE_CODE = config.ussd.serviceCode; // '*928*347#'
-    if (serviceCode && serviceCode !== ALLOWED_SERVICE_CODE) {
-        console.warn(`[USSD] Rejected request for unknown serviceCode: ${serviceCode}`);
-        sendUSSD(res, 'END This service is not available on this code.');
-        return;
+    const checkServiceCode = serviceCode || (isInitialRequest && typeof userData === 'string' && userData.startsWith('*') && userData.endsWith('#') ? userData : undefined);
+    if (checkServiceCode) {
+        const cleanAllowed = ALLOWED_SERVICE_CODE.endsWith('#') ? ALLOWED_SERVICE_CODE.slice(0, -1) : ALLOWED_SERVICE_CODE;
+        const cleanChecked = checkServiceCode.endsWith('#') ? checkServiceCode.slice(0, -1) : checkServiceCode;
+        if (cleanChecked !== cleanAllowed) {
+            console.warn(`[USSD] Rejected request for unknown serviceCode: ${checkServiceCode}`);
+            sendUSSD(res, 'END This service is not available on this code.');
+            return;
+        }
     }
-
 
     // Get or create session
     if (!sessions.has(sessionId)) {
