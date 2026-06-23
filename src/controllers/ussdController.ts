@@ -317,33 +317,24 @@ export const handleUSSDSession = async (req: Request, res: Response): Promise<vo
                 await processUSSDPayment(sessionId, session, phoneNumber, res);
             } else {
                 session.mobileNetwork = networkMap[lastInput];
-                session.step = 'enter_phone';
+                session.step = 'processing';
                 sessions.set(sessionId, session);
-                const networkNames: Record<string, string> = {
-                    'mtn': 'MTN',
-                    'vod': 'Vodafone/Telecel',
-                    'atl': 'AirtelTigo',
-                };
-                sendUSSD(res, `CON Enter your ${networkNames[session.mobileNetwork] || session.mobileNetwork.toUpperCase()} phone number:\n(e.g. 0241234567)`);
+                
+                // Format dialed phone number for Paystack (e.g., remove leading '+' if present)
+                const cleanPhone = phoneNumber.replace('+', '');
+                await processUSSDMoMoPayment(sessionId, session, cleanPhone, res);
             }
             return;
         }
 
-        // ── PHONE NUMBER ENTRY ────────────────────────────────────────────
+        // ── REDUNDANT STEP BYPASSED ───────────────────────────────────────
+        // (Kept handler signature for safety / backwards compatibility)
         if (session.step === 'enter_phone') {
             const phone = lastInput.trim();
-            if (!/^0[0-9]{9}$/.test(phone)) {
-                sendUSSD(res, 'CON Invalid phone number. Enter a valid 10-digit number:');
-                return;
-            }
-
-            // Convert to international format for Paystack: 0244123456 → 233244123456
-            const intlPhone = `233${phone.substring(1)}`;
-
+            const cleanPhone = phone.startsWith('+') ? phone.replace('+', '') : `233${phone.substring(1)}`;
             session.step = 'processing';
             sessions.set(sessionId, session);
-
-            await processUSSDMoMoPayment(sessionId, session, intlPhone, res);
+            await processUSSDMoMoPayment(sessionId, session, cleanPhone, res);
             return;
         }
 
