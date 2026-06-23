@@ -962,29 +962,21 @@ async function processUSSDMoMoPayment(sessionId: string, session: USSDSession, i
 
         // ── send_otp: treat same as pending MoMo approval (OTP removed from USSD) ──
         if (chargeDataStatus === 'send_otp') {
-            session.step = 'awaiting_momo_approval';
-            session.pendingOtpReference = reference;
-            sessions.set(sessionId, session);
+            sessions.delete(sessionId);
             sendUSSD(res, [
-                `CON Payment of GHS ${session.amount?.toFixed(2)} initiated.`,
-                `Please approve the MoMo prompt on your phone.`,
-                `Once approved, select:`,
-                `1. Confirm Payment Status`,
-                `2. Exit`,
+                `END Payment of GHS ${session.amount?.toFixed(2)} initiated.`,
+                `Please enter your MoMo PIN on the prompt that appears to confirm.`,
+                `If the prompt doesn't show, dial *170# -> My Wallet -> Approvals.`,
             ].join('\n'));
             return;
         }
 
         // ── APPROVED DIRECTLY (pay_offline, pending — user approves MoMo prompt) ──
-        session.step = 'awaiting_momo_approval';
-        session.pendingOtpReference = reference;
-        sessions.set(sessionId, session);
+        sessions.delete(sessionId);
         sendUSSD(res, [
-            `CON Payment of GHS ${session.amount?.toFixed(2)} initiated.`,
-            `Approve the prompt on your phone.`,
-            `Once approved, select:`,
-            `1. Confirm Payment Status`,
-            `2. Exit`,
+            `END Payment of GHS ${session.amount?.toFixed(2)} initiated.`,
+            `Please enter your MoMo PIN on the prompt that appears to confirm.`,
+            `If the prompt doesn't show, dial *170# -> My Wallet -> Approvals.`,
         ].join('\n'));
     } catch (error: any) {
         console.error('[USSD] MoMo payment error:', error);
