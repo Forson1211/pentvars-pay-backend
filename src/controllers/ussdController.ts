@@ -9,6 +9,7 @@ import { Transaction } from '../models/Transaction';
 import { AuditLog } from '../models/AuditLog';
 import { generateReference } from '../utils/helpers';
 import { config } from '../config/env';
+import { finalizePaymentSuccess } from './paymentController';
 
 /**
  * USSD Session state stored in memory (use Redis for production multi-server)
@@ -22,7 +23,7 @@ interface USSDSession {
     feeItemId?: string;
     studentFeeId?: string;
     amount?: number;
-    mobileNetwork?: 'mtn' | 'vodafone' | 'airtel' | 'tigo';
+    mobileNetwork?: 'mtn' | 'vod' | 'atl';
     reference?: string;
     createdAt: Date;
 }
@@ -103,7 +104,10 @@ export const handleUSSDSession = async (req: Request, res: Response): Promise<vo
         if (session.step === 'awaiting_student_id') {
             const studentIdInput = lastInput.trim().toUpperCase();
 
-            const student = await User.findOne({ studentId: studentIdInput, role: 'student', status: 'active' });
+            const student = await User.findOne({ 
+                studentId: { $regex: new RegExp('^' + studentIdInput + '$', 'i') }, 
+                role: 'student' 
+            });
             if (!student) {
                 sessions.delete(sessionId);
                 sendUSSD(res, 'END Student ID not found. Please check your ID and try again.');
@@ -202,9 +206,9 @@ export const handleUSSDSession = async (req: Request, res: Response): Promise<vo
         // ── CONFIRM ACADEMIC FEE ──────────────────────────────────────────
         if (session.step === 'confirm_academic') {
             if (lastInput === '1') {
-                session.step = 'select_network';
+                session.step = 'enter_amount';
                 sessions.set(sessionId, session);
-                sendUSSD(res, 'CON Select payment method:\n1. MTN Mobile Money\n2. Vodafone Cash\n3. AirtelTigo Money\n4. Card/Bank Transfer');
+                sendUSSD(res, `CON Enter amount to pay (Max: GHS ${session.amount?.toFixed(2)}):`);
             } else if (lastInput === '2') {
                 sessions.delete(sessionId);
                 sendUSSD(res, 'END Payment cancelled.');
@@ -217,9 +221,9 @@ export const handleUSSDSession = async (req: Request, res: Response): Promise<vo
         // ── CONFIRM HOSTEL FEE ────────────────────────────────────────────
         if (session.step === 'confirm_hostel') {
             if (lastInput === '1') {
-                session.step = 'select_network';
+                session.step = 'enter_amount';
                 sessions.set(sessionId, session);
-                sendUSSD(res, 'CON Select payment method:\n1. MTN Mobile Money\n2. Vodafone Cash\n3. AirtelTigo Money\n4. Card/Bank Transfer');
+                sendUSSD(res, `CON Enter amount to pay (Max: GHS ${session.amount?.toFixed(2)}):`);
             } else if (lastInput === '2') {
                 sessions.delete(sessionId);
                 sendUSSD(res, 'END Payment cancelled.');
@@ -232,9 +236,9 @@ export const handleUSSDSession = async (req: Request, res: Response): Promise<vo
         // ── CONFIRM RESIT FEE ─────────────────────────────────────────────
         if (session.step === 'confirm_resit') {
             if (lastInput === '1') {
-                session.step = 'select_network';
+                session.step = 'enter_amount';
                 sessions.set(sessionId, session);
-                sendUSSD(res, 'CON Select payment method:\n1. MTN Mobile Money\n2. Vodafone Cash\n3. AirtelTigo Money\n4. Card/Bank Transfer');
+                sendUSSD(res, `CON Enter amount to pay (Max: GHS ${session.amount?.toFixed(2)}):`);
             } else if (lastInput === '2') {
                 sessions.delete(sessionId);
                 sendUSSD(res, 'END Payment cancelled.');
@@ -247,9 +251,9 @@ export const handleUSSDSession = async (req: Request, res: Response): Promise<vo
         // ── CONFIRM SUPPLEMENTARY FEE ─────────────────────────────────────
         if (session.step === 'confirm_supplementary') {
             if (lastInput === '1') {
-                session.step = 'select_network';
+                session.step = 'enter_amount';
                 sessions.set(sessionId, session);
-                sendUSSD(res, 'CON Select payment method:\n1. MTN Mobile Money\n2. Vodafone Cash\n3. AirtelTigo Money\n4. Card/Bank Transfer');
+                sendUSSD(res, `CON Enter amount to pay (Max: GHS ${session.amount?.toFixed(2)}):`);
             } else if (lastInput === '2') {
                 sessions.delete(sessionId);
                 sendUSSD(res, 'END Payment cancelled.');
@@ -259,16 +263,38 @@ export const handleUSSDSession = async (req: Request, res: Response): Promise<vo
             return;
         }
 
+        // ── ENTER AMOUNT ──────────────────────────────────────────────────
+        if (session.step === 'enter_amount') {
+            const enteredAmount = parseFloat(lastInput.trim());
+            const maxAmount = session.amount || 0;
+
+            if (isNaN(enteredAmount) || enteredAmount <= 0) {
+                sendUSSD(res, `CON Invalid amount. Enter a valid amount to pay (Max: GHS ${maxAmount.toFixed(2)}):`);
+                return;
+            }
+
+            if (enteredAmount > maxAmount) {
+                sendUSSD(res, `CON Amount exceeds outstanding balance of GHS ${maxAmount.toFixed(2)}.\nEnter amount to pay (Max: GHS ${maxAmount.toFixed(2)}):`);
+                return;
+            }
+
+            session.amount = enteredAmount;
+            session.step = 'select_network';
+            sessions.set(sessionId, session);
+            sendUSSD(res, 'CON Select payment method:\n1. MTN Mobile Money\n2. Vodafone/Telecel Cash\n3. AirtelTigo Money\n4. Card/Bank Transfer');
+            return;
+        }
+
         // ── NETWORK SELECTION & PAYMENT ────────────────────────────────────
         if (session.step === 'select_network') {
-            const networkMap: Record<string, 'mtn' | 'vodafone' | 'airtel' | 'tigo'> = {
+            const networkMap: Record<string, 'mtn' | 'vod' | 'atl'> = {
                 '1': 'mtn',
-                '2': 'vodafone',
-                '3': 'airtel', // AirtelTigo
+                '2': 'vod',
+                '3': 'atl', // AirtelTigo
             };
 
             if (!['1', '2', '3', '4'].includes(lastInput)) {
-                sendUSSD(res, 'CON Invalid option.\n1. MTN Mobile Money\n2. Vodafone Cash\n3. AirtelTigo Money\n4. Card/Bank Transfer');
+                sendUSSD(res, 'CON Invalid option.\n1. MTN Mobile Money\n2. Vodafone/Telecel Cash\n3. AirtelTigo Money\n4. Card/Bank Transfer');
                 return;
             }
 
@@ -281,7 +307,12 @@ export const handleUSSDSession = async (req: Request, res: Response): Promise<vo
                 session.mobileNetwork = networkMap[lastInput];
                 session.step = 'enter_phone';
                 sessions.set(sessionId, session);
-                sendUSSD(res, `CON Enter your ${session.mobileNetwork?.toUpperCase()} phone number:\n(e.g. 0241234567)`);
+                const networkNames: Record<string, string> = {
+                    'mtn': 'MTN',
+                    'vod': 'Vodafone/Telecel',
+                    'atl': 'AirtelTigo',
+                };
+                sendUSSD(res, `CON Enter your ${networkNames[session.mobileNetwork] || session.mobileNetwork.toUpperCase()} phone number:\n(e.g. 0241234567)`);
             }
             return;
         }
@@ -524,13 +555,19 @@ async function processDemoPayment(
     phoneOrNetwork: string,
     res: Response
 ): Promise<void> {
+    if (!session.amount) {
+        sessions.delete(sessionId);
+        sendUSSD(res, 'END Session error. Please try again.');
+        return;
+    }
+
     const reference = generateReference('DEMO');
     const category = session.feeType as any || 'academic';
     const description = `[DEMO] USSD ${category} fee payment`;
 
     try {
-        // Create a transaction marked as successful (demo)
-        await Transaction.create({
+        // Create a transaction marked as pending first, then finalize it.
+        const transaction = await Transaction.create({
             studentId: student.id,
             feeItemId: session.feeItemId || undefined,
             studentFeeId: session.studentFeeId || undefined,
@@ -538,24 +575,26 @@ async function processDemoPayment(
             amountExpected: session.amount,
             paymentMethod,
             paymentChannel: 'ussd',
-            status: 'success',
+            status: 'pending',
             reference,
             category,
             description,
-            webhookVerified: true,
+            webhookVerified: false,
             metadata: { channel: 'ussd', demoMode: true, network: phoneOrNetwork },
         });
 
-        await AuditLog.create({
-            action: 'ussd_demo_payment',
-            reference,
-            studentId: student.id,
-            amount: session.amount,
-            category,
-            channel: 'ussd-demo',
-            details: { demoMode: true, paymentMethod },
-            isError: false,
-        }).catch(console.error);
+        // Finalize transaction using the shared payment controller function.
+        // This updates the ledger (decrementing StudentFee/FeeItem balance),
+        // creates the Payment record, audits the success, sends real-time socket events,
+        // and creates notifications.
+        await finalizePaymentSuccess(
+            transaction,
+            new Date(),
+            reference, // providerReference
+            session.amount,
+            paymentMethod === 'mobile_money' ? 'mobile_money' : 'bank_transfer', // channel
+            'Approved (Demo USSD)' // gatewayResponse
+        );
 
         sessions.delete(sessionId);
 
@@ -715,7 +754,7 @@ export const getUSSDMenu = async (req: Request, res: Response): Promise<void> =>
             : '💳 LIVE MODE — payments go through Paystack.',
         menu: {
             main: ['1. Pay Academic Fee', '2. Pay Hostel Fee', '3. Pay Resit Fee', '4. Pay Supplementary Fee', '5. Check Balance'],
-            paymentMethods: ['1. MTN Mobile Money', '2. Vodafone Cash', '3. AirtelTigo Money', '4. Card/Bank Transfer'],
+            paymentMethods: ['1. MTN Mobile Money', '2. Vodafone/Telecel Cash', '3. AirtelTigo Money', '4. Card/Bank Transfer'],
         },
         description: 'PentVars Pay USSD Service for Pentecost University students',
         howToTest: {

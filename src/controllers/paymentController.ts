@@ -87,7 +87,8 @@ export async function finalizePaymentSuccess(
             student: transaction.studentId,
             amount: amountGHSPaid,
             paymentMethod: channel === 'mobile_money' ? 'mobile_money' :
-                channel === 'card' ? 'card' : 'bank_transfer',
+                channel === 'card' ? 'card' :
+                channel === 'ussd' ? 'ussd' : 'bank_transfer',
             transactionReference: transaction.reference,
             status: 'completed',
             paymentDate: paidAtDate,
@@ -439,6 +440,7 @@ function determineSupportedChannels(paymentMethod: string, category: FeeCategory
     if (paymentMethod === 'mobile_money') return ['mobile_money'];
     if (paymentMethod === 'card') return ['card'];
     if (paymentMethod === 'bank_transfer') return ['bank_transfer', 'bank'];
+    if (paymentMethod === 'ussd') return ['ussd'];
 
     // Default fallback
     return ['card', 'mobile_money', 'bank_transfer', 'ussd'];

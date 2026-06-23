@@ -1,6 +1,6 @@
 import mongoose, { Document, Schema, Types } from 'mongoose';
 
-export type PaymentMethod = 'mobile_money' | 'card' | 'bank_transfer';
+export type PaymentMethod = 'mobile_money' | 'card' | 'bank_transfer' | 'ussd';
 export type PaymentStatus = 'pending' | 'processing' | 'completed' | 'failed' | 'refunded';
 
 export interface IPayment extends Document {
@@ -43,7 +43,7 @@ const paymentSchema = new Schema<IPayment>(
         },
         paymentMethod: {
             type: String,
-            enum: ['mobile_money', 'card', 'bank_transfer'],
+            enum: ['mobile_money', 'card', 'bank_transfer', 'ussd'],
             required: [true, 'Payment method is required'],
         },
         transactionReference: {

@@ -225,7 +225,7 @@ export class PaystackService {
         email: string,
         reference: string,
         phone: string,
-        provider: 'mtn' | 'vodafone' | 'airtel' | 'tigo' = 'mtn',
+        provider: 'mtn' | 'vod' | 'atl' = 'mtn',
         metadata: Record<string, any> = {}
     ): Promise<any> {
         const amountPesewas = Math.round(amountGHS * 100);

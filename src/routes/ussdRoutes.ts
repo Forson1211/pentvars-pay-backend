@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import express from 'express';
+import path from 'path';
 import { handleUSSDSession, getUSSDMenu } from '../controllers/ussdController';
 
 const router = Router();
@@ -10,6 +11,18 @@ const router = Router();
  * while others send JSON. We accept both.
  */
 router.use(express.urlencoded({ extended: true }));
+
+/**
+ * GET /api/ussd/simulator
+ * Interactive web mockup for presenting and testing USSD menus
+ */
+router.get('/simulator', (req, res) => {
+    res.sendFile(path.resolve(process.cwd(), 'src/views/simulator.html'));
+});
+
+router.get('/simulator.js', (req, res) => {
+    res.sendFile(path.resolve(process.cwd(), 'src/views/simulator.js'));
+});
 
 /**
  * POST /api/ussd/session
