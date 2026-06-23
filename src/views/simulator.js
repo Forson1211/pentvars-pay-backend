@@ -111,16 +111,6 @@ function showDialog(message, isInputNeeded = true) {
         if (input) {
             input.style.display = 'block';
             input.value = '';
-            
-            // Auto-populate if the prompt is asking for a phone number
-            const lowerMsg = message.toLowerCase();
-            if (lowerMsg.includes('phone number') || lowerMsg.includes('momo') || lowerMsg.includes('mobile money')) {
-                const simPhoneInput = document.getElementById('sim-phone');
-                if (simPhoneInput && simPhoneInput.value.trim()) {
-                    input.value = simPhoneInput.value.trim();
-                }
-            }
-            
             setTimeout(() => input.focus(), 150);
         }
         if (sendBtn) sendBtn.textContent = 'Send';
