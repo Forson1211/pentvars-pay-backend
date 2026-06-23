@@ -827,12 +827,16 @@ async function processUSSDMoMoPayment(sessionId: string, session: USSDSession, i
         return;
     }
 
+    console.log(`[USSD] processUSSDMoMoPayment → phone: ${intlPhone} | network: ${session.mobileNetwork} | amount: ${session.amount} | demoMode: ${config.ussd.demoMode}`);
+
     // ── DEMO MODE: Simulate payment without calling Paystack ──
     if (config.ussd.demoMode) {
+        console.log('[USSD] Running in DEMO mode — no real charge sent');
         await processDemoPayment(sessionId, session, student, 'mobile_money', session.mobileNetwork || 'mtn', res);
         return;
     }
 
+    console.log(`[USSD] LIVE mode — charging ${intlPhone} via Paystack`);
     // ── LIVE MODE: Real Paystack charge ──
     const reference = generateReference('USSD');
     const category = session.feeType as any || 'academic';
