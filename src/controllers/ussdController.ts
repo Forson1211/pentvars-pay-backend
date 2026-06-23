@@ -338,7 +338,7 @@ export const handleUSSDSession = async (req: Request, res: Response): Promise<vo
             return;
         }
 
-        // ── AWAITING OTP (Paystack send_otp flow) ─────────────────────────
+        // ── AWAITING OTP: step removed — no longer reachable ────────────────
         if (session.step === 'awaiting_otp') {
             const otpCode = lastInput.trim();
             if (!otpCode || otpCode.length < 4) {
@@ -888,13 +888,18 @@ async function processUSSDMoMoPayment(sessionId: string, session: USSDSession, i
             return;
         }
 
-        // ── OTP REQUIRED: Paystack needs the user to enter an OTP ────────────
+        // ── send_otp: treat same as pending MoMo approval (OTP removed from USSD) ──
         if (chargeDataStatus === 'send_otp') {
-            // Keep the session alive so the user can enter the OTP
-            session.step = 'awaiting_otp';
+            session.step = 'awaiting_momo_approval';
             session.pendingOtpReference = reference;
             sessions.set(sessionId, session);
-            sendUSSD(res, `CON Enter the OTP sent to your phone to confirm payment of GHS ${session.amount?.toFixed(2)}:`);
+            sendUSSD(res, [
+                `CON Payment of GHS ${session.amount?.toFixed(2)} initiated.`,
+                `Please approve the MoMo prompt on your phone.`,
+                `Once approved, select:`,
+                `1. Confirm Payment Status`,
+                `2. Exit`,
+            ].join('\n'));
             return;
         }
 
